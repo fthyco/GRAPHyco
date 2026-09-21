@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Graphyco — Computational Graph Flow & Live Diagnostics</title>
+<!-- INLINE_CSS_PLACEHOLDER -->
+<link rel="stylesheet" href="visualizer.css">
+</head>
+<body>
+
+<header>
+  <h1>Graphyco <span class="badge">G<sub>t</sub> Flow</span></h1>
+  <div>
+    <input type="file" id="json-input" accept=".json" style="display:none">
+    <button class="seg-btn" onclick="document.getElementById('json-input').click()" style="border: 1px solid var(--border); border-radius: 4px; padding: 5px 14px; font-size: 13px; font-weight: 500;">Load JSON</button>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="group">
+    <label>Model</label>
+    <select id="arch-select" class="control"></select>
+  </div>
+
+  <div class="group">
+    <label>View</label>
+    <div class="seg-btn-group" id="view-buttons">
+      <button class="seg-btn active" data-view="neuron">Multi-Neuron</button>
+      <button class="seg-btn" data-view="layer">Layer Graph</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <label>Indicator</label>
+    <div class="seg-btn-group" id="mode-buttons">
+      <button class="seg-btn active" data-mode="gradient">Gradient</button>
+      <button class="seg-btn" data-mode="activation">Activation</button>
+      <button class="seg-btn" data-mode="sensitivity">g/a Ratio</button>
+      <button class="seg-btn" data-mode="type">Type I–IV</button>
+      <button class="seg-btn" data-mode="topology">Perturbation</button>
+      <button class="seg-btn" data-mode="stability">CV</button>
+    </div>
+  </div>
+
+  <div class="group">
+    <label>Step</label>
+    <div class="playback">
+      <button class="step-btn" id="btn-prev" title="Previous step">◀</button>
+      <button class="step-btn" id="btn-play" title="Play / Pause">▶ Play</button>
+      <button class="step-btn" id="btn-next" title="Next step">▶</button>
+      <input type="range" id="step-slider" class="step-slider" min="1" max="10" value="1">
+      <span class="step-label" id="step-display">t = 1 / 10</span>
+    </div>
+  </div>
+</div>
+
+<div class="workspace">
+  <!-- Figure -->
+  <div class="figure-panel">
+    <div class="canvas-area" id="canvas-container">
+      <svg id="graph-svg">
+        <defs>
+          <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+            <path d="M 0 1.5 L 9 5 L 0 8.5 z" fill="#4b5563"/>
+          </marker>
+          <marker id="arrow-down" viewBox="0 0 10 10" refX="5" refY="8" markerWidth="4.5" markerHeight="4.5" orient="auto">
+            <path d="M 1.5 0 L 5 9 L 8.5 0 z" fill="#4b5563"/>
+          </marker>
+        </defs>
+        <g id="transform-layer">
+          <g id="annotations-layer"></g>
+          <g id="edges-layer"></g>
+          <g id="nodes-layer"></g>
+        </g>
+      </svg>
+
+      <!-- In-canvas Dynamic Legend -->
+      <div class="legend-card" id="legend-card">
+        <div class="legend-title" id="legend-name">Dynamic State Indicator</div>
+        <div id="legend-content">
+          <div class="legend-row">
+            <div class="core-sample"><div class="core-dot" style="width:0;height:0"></div></div>
+            <span>Quiescent / Minimal</span>
+          </div>
+          <div class="legend-row">
+            <div class="core-sample"><div class="core-dot" style="width:5px;height:5px"></div></div>
+            <span>Moderate dynamic state</span>
+          </div>
+          <div class="legend-row">
+            <div class="core-sample"><div class="core-dot" style="width:10px;height:10px"></div></div>
+            <span>Peak dynamic magnitude</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Zoom controls -->
+      <div class="zoom-tools">
+        <button class="zoom-btn" id="btn-zoom-out" title="Zoom Out">−</button>
+        <span class="zoom-level-text" id="zoom-display">100%</span>
+        <button class="zoom-btn" id="btn-zoom-in" title="Zoom In">+</button>
+        <button class="zoom-btn" id="btn-zoom-reset" title="Fit to View">Fit</button>
+      </div>
+    </div>
+
+    <div class="caption">
+      <strong>Fig 1.</strong> <span id="caption-mode-text">Multi-neuron network</span> at step <span id="caption-step" style="font-family: var(--mono)">t = 1</span>.
+      Node dynamic states indicated by inner core dot area and stroke weight. Bipartite edges reflect synaptic propagation throughput.
+    </div>
+  </div>
+
+  <!-- Sidebar Tables -->
+  <div class="sidebar">
+    <div class="sidebar-section">
+      <h2>Summary Invariants</h2>
+    </div>
+    <div class="sidebar-body">
+      <table class="booktabs">
+        <thead>
+          <tr><th>Invariant / Flow Property</th><th style="text-align:center">Sym</th><th style="text-align:right">Value</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Topological Bottleneck</td><td class="sym">B(G)</td><td class="val" id="val-bneck">-</td></tr>
+          <tr><td>Gradient Concentration</td><td class="sym">G<sub>max</sub></td><td class="val" id="val-gmax">-</td></tr>
+          <tr><td>Bottleneck Node</td><td class="sym">v*</td><td class="val" id="val-bnode">-</td></tr>
+          <tr><td>Connectivity Coherence</td><td class="sym">C(G)</td><td class="val" id="val-coher">-</td></tr>
+          <tr><td>Structural Resilience</td><td class="sym">R(G)</td><td class="val" id="val-resil">-</td></tr>
+          <tr><td>Spearman ρ(a,g)</td><td class="sym">ρ<sub>AG</sub></td><td class="val" id="val-spearman">-</td></tr>
+          <tr><td>Pearson r(a,g)</td><td class="sym">r<sub>AG</sub></td><td class="val" id="val-pearson">-</td></tr>
+          <tr><td>Temporal CV (Mean)</td><td class="sym">CV</td><td class="val" id="val-cv">-</td></tr>
+          <tr><td>Type I / II / III / IV</td><td class="sym">N<sub>I-IV</sub></td><td class="val" id="val-types">-</td></tr>
+        </tbody>
+      </table>
+
+      <div>
+        <div class="node-header">
+          <span style="font: 700 11px var(--serif); text-transform: uppercase;">Node / Neuron Telemetry</span>
+          <span class="node-tag" id="ins-type-tag">Hover or Click</span>
+        </div>
+
+        <div id="inspector-empty" class="empty-hint">
+          Click or hover any neuron or node in the graph to inspect step telemetry.
+        </div>
+
+        <div id="inspector-panel" style="display:none">
+          <div style="margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+            <span class="node-name" id="ins-node-name">-</span>
+            <span class="type-badge" id="ins-category-tag">-</span>
+          </div>
+
+          <table class="booktabs">
+            <thead>
+              <tr><th>Metric</th><th style="text-align:center">Sym</th><th style="text-align:right">Current Step</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Activation RMS</td><td class="sym">||x<sub>i</sub>||</td><td class="val" id="ins-act">-</td></tr>
+              <tr><td>Gradient RMS</td><td class="sym">||g<sub>i</sub>||</td><td class="val" id="ins-grad">-</td></tr>
+              <tr><td>Sensitivity Ratio</td><td class="sym">g/a</td><td class="val" id="ins-ratio">-</td></tr>
+              <tr><td>Param Gradient RMS</td><td class="sym">||∇W||</td><td class="val" id="ins-param-grad">-</td></tr>
+              <tr><td>Static Perturbation Cost</td><td class="sym">T<sub>i</sub></td><td class="val" id="ins-topo">-</td></tr>
+              <tr><td>Ablation Reachability Loss</td><td class="sym">ΔR</td><td class="val" id="ins-ablation">-</td></tr>
+              <tr><td>Temporal Stability CV</td><td class="sym">CV<sub>i</sub></td><td class="val" id="ins-cv">-</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script id="embedded-data" type="application/json">
+<!-- DATA_PLACEHOLDER -->
+</script>
+
+<!-- INLINE_JS_PLACEHOLDER -->
+<script src="visualizer.js"></script>
+</body>
+</html>

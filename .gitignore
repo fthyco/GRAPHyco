@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.ipynb_checkpoints/
+*.egg-info/
+dist/
+build/
+.venv/
+env/
+venv/
+*.log
+
+# Test files and directories
+tests/
+**/tests/
+# Demo / validation (not part of the distributed package)
+run_live_demo.py
+validation/
