@@ -35,7 +35,7 @@ jobs:
         run: python -m pytest -q
       - name: CPU monitor overhead probe (non-gating performance)
         if: matrix.python-version == '3.11'
-        run: python benchmarks/monitor_overhead.py --steps 3 --warmup 1 --width 16 --json /tmp/graphyco-cpu-perf.json
+        run: python benchmarks/monitor_overhead.py --steps 12 --warmup 4 --width 16 --json /tmp/graphyco-cpu-perf.json
       - name: Build distributable wheel
         run: python -m build --wheel --no-isolation
       - name: Build distributable source archive
