@@ -326,7 +326,10 @@ class FXGradObserver(Interpreter):
         for name, mod in self.node_modules.items():
             param_tensors = [p.grad for p in mod.parameters(recurse=False) if p.grad is not None]
             if param_tensors:
-                flat_grads = torch.cat([p.flatten().to(dtype=torch.float64, device="cpu") for p in param_tensors])
+                flat_grads = torch.cat([
+                    grad.detach().flatten().to(dtype=torch.float64, device="cpu")
+                    for grad in param_tensors
+                ])
                 self.raw_param_grads[name] = flat_grads
 
     def extract_records(self, eps: float = 1e-8) -> Tuple[Dict[str, DynamicNodeRecord], Dict[Tuple[str, str], TensorStats]]:
@@ -439,7 +442,10 @@ class ModuleGradObserver:
                 name = "root"
             param_tensors = [p.grad for p in module.parameters(recurse=False) if p.grad is not None]
             if param_tensors:
-                flat_grads = torch.cat([p.flatten().to(dtype=torch.float64, device="cpu") for p in param_tensors])
+                flat_grads = torch.cat([
+                    grad.detach().flatten().to(dtype=torch.float64, device="cpu")
+                    for grad in param_tensors
+                ])
                 self.raw_param_grads[name] = flat_grads
 
     def remove_hooks(self) -> None:
