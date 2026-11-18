@@ -33,13 +33,31 @@ def _check_edge_integrity(state: GraphState) -> None:
             raise InvariantViolationError('edge_integrity', f'Edge target={edge.target!r} does not exist in nodes')
 
 def _check_port_connectivity(state: GraphState) -> None:
-    all_inputs: set[str] = set()
+    """Validate FX-style port references in both directions.
+
+    For a dependency src -> dst, src.out_ports stores dst.id and
+    dst.in_ports stores src.id. The old check incorrectly looked for
+    dst.id among all input ports; it would reject ordinary sink edges.
+    This invariant checks the reciprocal reference, not merely the
+    presence of a matching identifier anywhere in the graph.
+    """
     for node in state.nodes.values():
-        all_inputs.update(node.in_ports)
-    for node in state.nodes.values():
-        for output in node.out_ports:
-            if output not in all_inputs:
-                raise InvariantViolationError('port_connectivity', f'Node {node.id!r} produces output {output!r} that no node consumes as in_port')
+        for consumer_id in node.out_ports:
+            consumer = state.nodes.get(consumer_id)
+            if consumer is None or node.id not in consumer.in_ports:
+                raise InvariantViolationError(
+                    'port_connectivity',
+                    f'Node {node.id!r} lists consumer {consumer_id!r} '
+                    'without reciprocal in_port reference',
+                )
+        for producer_id in node.in_ports:
+            producer = state.nodes.get(producer_id)
+            if producer is None or node.id not in producer.out_ports:
+                raise InvariantViolationError(
+                    'port_connectivity',
+                    f'Node {node.id!r} lists producer {producer_id!r} '
+                    'without reciprocal out_port reference',
+                )
 
 def _check_node_uniqueness(state: GraphState) -> None:
     ids = list(state.nodes.keys())
