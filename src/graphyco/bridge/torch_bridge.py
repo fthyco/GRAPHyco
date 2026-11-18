@@ -267,7 +267,10 @@ def evaluate_model_dynamic(
     from .grad_bridge import DynamicExecutionBridge
 
     bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args, strict_trace=strict_trace)
-    dyn_state = bridge.step(inputs=inputs, loss_fn=loss_fn)
+    try:
+        dyn_state = bridge.step(inputs=inputs, loss_fn=loss_fn)
+    finally:
+        bridge.close()
 
     total_params = sum((p.numel() for p in model.parameters()))
     trainable = sum((p.numel() for p in model.parameters() if p.requires_grad))
