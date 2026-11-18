@@ -24,12 +24,13 @@ classifiers = [
 dependencies = [
     "torch>=2.0",
     "numpy>=1.24",
+    "scipy>=1.10",
 ]
 
 [project.optional-dependencies]
 gui = ["PySide6"]
 query = ["pandas>=2.0"]
-dev = ["pytest>=7.0", "pandas>=2.0", "PySide6"]
+dev = ["pytest>=7.0", "pandas>=2.0", "build>=1.0", "wheel"]
 all = ["PySide6", "pandas>=2.0"]
 
 [project.urls]
@@ -43,5 +44,8 @@ graphyco = "graphyco.visualizer.__main__:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"graphyco.visualizer" = ["static/*.html", "static/*.css", "static/*.js"]
+
 [tool.pytest.ini_options]
-testpaths = ["src/graphyco/tests"]
+testpaths = ["tests"]
