@@ -229,3 +229,77 @@ def test_public_query_descriptions_are_truthful_and_legacy_keys_stable() -> None
     assert "not measured reachability" in frame.loc["Structural Cost Proxy (R)", "Description"]
     assert values == before
     assert {key for key, _, _ in QUERY_METRIC_DEFINITIONS} == set(values)
+
+
+def test_all_three_vertex_directed_graphs_against_independent_oracles() -> None:
+    """Enumerate all 64 simple directed 3-node graphs (incl. cycles/shortcuts)."""
+    vertices = ("A", "B", "C")
+    possible = [(a, b) for a in vertices for b in vertices if a != b]
+
+    def all_simple_paths(adjacency, source, destination, trail):
+        if source == destination:
+            return [tuple(trail)]
+        paths = []
+        for neighbor in adjacency[source]:
+            if neighbor not in trail:
+                paths.extend(all_simple_paths(
+                    adjacency, neighbor, destination, trail + [neighbor]
+                ))
+        return paths
+
+    def independent_reachability(adjacency):
+        # Floyd-Warshall oracle, deliberately different from production BFS.
+        reachable = {(a, b) for a in vertices for b in adjacency.get(a, ())}
+        for middle in vertices:
+            for source in vertices:
+                for target in vertices:
+                    if (source, middle) in reachable and (middle, target) in reachable:
+                        reachable.add((source, target))
+        return {pair for pair in reachable if pair[0] != pair[1]}
+
+    for mask in range(1 << len(possible)):
+        arcs = [arc for bit, arc in enumerate(possible) if mask & (1 << bit)]
+        state = graph(vertices, arcs)
+        adjacency = {v: set() for v in vertices}
+        for a, b in arcs:
+            adjacency[a].add(b)
+
+        shortest_credit = {v: 0.0 for v in vertices}
+        for source in vertices:
+            for destination in vertices:
+                if source == destination:
+                    continue
+                routes = all_simple_paths(adjacency, source, destination, [source])
+                if not routes:
+                    continue
+                shortest_len = min(len(p) for p in routes)
+                best_routes = [p for p in routes if len(p) == shortest_len]
+                for route in best_routes:
+                    for intermediate in route[1:-1]:
+                        shortest_credit[intermediate] += 1 / len(best_routes)
+
+        computed_bc = directed_node_betweenness(state, normalized=False)
+        for v in vertices:
+            assert computed_bc[v] == pytest.approx(shortest_credit[v]), (mask, v)
+
+        original_pairs = independent_reachability(adjacency)
+        calculated_loss = pairwise_reachability_ablation_loss(state)
+        for removed in vertices:
+            baseline = {p for p in original_pairs if removed not in p}
+            updated_adjacency = {
+                v: {t for t in adjacency[v] if t != removed}
+                for v in vertices if v != removed
+            }
+            # All surviving pairs are checked by an independent DFS.
+            remaining_reachable = {
+                (s, t)
+                for s, t in baseline
+                if all_simple_paths(updated_adjacency, s, t, [s])
+            }
+            oracle_loss = (
+                (len(baseline) - len(remaining_reachable)) / len(baseline)
+                if baseline else 0.0
+            )
+            assert calculated_loss[removed] == pytest.approx(oracle_loss), (
+                mask, removed,
+            )
