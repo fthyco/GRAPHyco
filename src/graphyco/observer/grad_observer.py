@@ -145,7 +145,14 @@ class EdgeAutogradHook(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: Optional[torch.Tensor]):
         if grad_output is not None and ctx.sink is not None:
-            ctx.sink[ctx.edge_key] = grad_output.detach().clone()
+            # The same symbolic source may occur more than once in a
+            # consumer's arguments, e.g. torch.add(x, x). Accumulate the
+            # contributions instead of silently keeping only the last one.
+            grad = grad_output.detach()
+            previous = ctx.sink.get(ctx.edge_key)
+            ctx.sink[ctx.edge_key] = (
+                grad.clone() if previous is None else previous + grad
+            )
         return grad_output, None, None
 
 
@@ -199,16 +206,23 @@ class FXGradObserver(Interpreter):
         """Clears captured runtime tensors."""
         self.raw_activations: Dict[str, torch.Tensor] = {}
         self.raw_activation_grads: Dict[str, torch.Tensor] = {}
+        self.raw_output_component_grads: Dict[Tuple[str, int], torch.Tensor] = {}
         self.raw_edge_grads: Dict[Tuple[str, str], torch.Tensor] = {}
         self.raw_param_grads: Dict[str, torch.Tensor] = {}
         self.node_types: Dict[str, str] = {}
         self.node_modules: Dict[str, nn.Module] = {}
 
-    def _attach_tensor_hook(self, name: str, t: torch.Tensor) -> None:
+    def _attach_tensor_hook(
+        self, name: str, t: torch.Tensor, component_index: int = 0
+    ) -> None:
+        """Track tuple components independently; public node stats use first."""
         if t.requires_grad:
             def hook(grad: torch.Tensor):
                 if grad is not None:
-                    self.raw_activation_grads[name] = grad.detach().clone()
+                    snapshot = grad.detach().clone()
+                    self.raw_output_component_grads[(name, component_index)] = snapshot
+                    if component_index == 0:
+                        self.raw_activation_grads[name] = snapshot
             t.register_hook(hook)
 
     def run_node(self, n: FxNode) -> Any:
@@ -252,8 +266,8 @@ class FXGradObserver(Interpreter):
             tensor_items = [item for item in out if isinstance(item, torch.Tensor)]
             if tensor_items:
                 self.raw_activations[n.name] = tensor_items[0].detach().clone()
-                for item in tensor_items:
-                    self._attach_tensor_hook(n.name, item)
+                for index, item in enumerate(tensor_items):
+                    self._attach_tensor_hook(n.name, item, component_index=index)
 
         return out
 
@@ -315,6 +329,7 @@ class ModuleGradObserver:
     def __init__(self, model: nn.Module):
         self.model = model
         self.handles: List[Any] = []
+        self.enabled = True
         self.reset()
         self._register_hooks()
 
@@ -337,6 +352,8 @@ class ModuleGradObserver:
 
     def _make_fwd_hook(self, name: str) -> Callable:
         def hook(module: nn.Module, inp: Any, outp: Any) -> None:
+            if not self.enabled:
+                return
             if isinstance(outp, torch.Tensor):
                 self.raw_activations[name] = outp.detach().clone()
             elif isinstance(outp, (tuple, list)) and len(outp) > 0 and isinstance(outp[0], torch.Tensor):
@@ -345,6 +362,8 @@ class ModuleGradObserver:
 
     def _make_bwd_hook(self, name: str) -> Callable:
         def hook(module: nn.Module, grad_input: Any, grad_output: Any) -> None:
+            if not self.enabled:
+                return
             if grad_output and len(grad_output) > 0 and isinstance(grad_output[0], torch.Tensor):
                 self.raw_activation_grads[name] = grad_output[0].detach().clone()
         return hook
