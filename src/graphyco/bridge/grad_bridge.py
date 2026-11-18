@@ -123,6 +123,7 @@ class DynamicExecutionBridge:
         record_edges: bool = True,
         strict_trace: bool = False,
         max_history_steps: Optional[int] = 128,
+        stats_backend: str = "cpu",
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -130,6 +131,9 @@ class DynamicExecutionBridge:
         self.mode = mode
         self.concrete_args = concrete_args
         self.record_edges = record_edges
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
         if max_history_steps is not None and max_history_steps < 1:
             raise ValueError("max_history_steps must be >= 1 or None")
         self.max_history_steps = max_history_steps
@@ -141,7 +145,7 @@ class DynamicExecutionBridge:
             try:
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
                 self.static_state = _fx_to_graph(model, self.traced_module)
-                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
+                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges, stats_backend=stats_backend)
             except Exception as exc:
                 if strict_trace:
                     raise
@@ -154,11 +158,11 @@ class DynamicExecutionBridge:
                     "fallback_reason": str(exc)[:500],
                 })
                 self.traced_module = None
-                self.observer = ModuleGradObserver(model)
+                self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
         else:
             self.static_state = module_to_graph(model)
             self.traced_module = None
-            self.observer = ModuleGradObserver(model)
+            self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
 
         self.static_evaluation = evaluate(self.static_state)
         self.static_profile = perturbation_profile(self.static_state)
@@ -376,6 +380,7 @@ class LiveTrainingMonitor:
         record_edges: bool = True,
         strict_trace: bool = False,
         max_history_steps: Optional[int] = 128,
+        stats_backend: str = "cpu",
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -384,6 +389,9 @@ class LiveTrainingMonitor:
         self.concrete_args = concrete_args
         self.log_interval = max(1, log_interval)
         self.record_edges = record_edges
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
         if max_history_steps is not None and max_history_steps < 1:
             raise ValueError("max_history_steps must be >= 1 or None")
         self.max_history_steps = max_history_steps
@@ -394,7 +402,7 @@ class LiveTrainingMonitor:
             try:
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
                 self.static_state = _fx_to_graph(model, self.traced_module)
-                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
+                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges, stats_backend=stats_backend)
             except Exception as exc:
                 if strict_trace:
                     raise
@@ -407,11 +415,11 @@ class LiveTrainingMonitor:
                     "fallback_reason": str(exc)[:500],
                 })
                 self.traced_module = None
-                self.observer = ModuleGradObserver(model)
+                self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
         else:
             self.static_state = module_to_graph(model)
             self.traced_module = None
-            self.observer = ModuleGradObserver(model)
+            self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
 
         self.static_evaluation = evaluate(self.static_state)
         self.static_profile = perturbation_profile(self.static_state)
