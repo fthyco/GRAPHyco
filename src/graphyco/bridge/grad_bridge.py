@@ -11,10 +11,10 @@ import torch
 import torch.nn as nn
 from torch.fx import GraphModule, symbolic_trace
 
-from core.evaluation import evaluate, perturbation_profile
-from core.primitives import Edge, GraphState, SCALE
-from observer.grad_eval import evaluate_dynamic_flow
-from observer.grad_observer import (
+from ..core.evaluation import evaluate, perturbation_profile
+from ..core.primitives import Edge, GraphState, SCALE
+from ..observer.grad_eval import evaluate_dynamic_flow
+from ..observer.grad_observer import (
     DynamicNodeRecord,
     FXGradObserver,
     ModuleGradObserver,
