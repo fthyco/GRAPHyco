@@ -228,15 +228,19 @@ class DynamicExecutionBridge:
         # 3. Backward pass
         if optimizer is not None:
             optimizer.zero_grad()
-        # A diagnostic call without an optimizer must not contaminate
-        # parameter .grad values retained by the caller. The backward pass
-        # still runs and model forward/stateful buffers may change.
+        # Measure *this* diagnostic backward, not pre-existing caller
+        # gradients plus the current backward. Keep the exact original
+        # gradient tensor objects (including None) to restore on exit.
+        # This avoids both distorted telemetry and invalidating references
+        # held by external training code.
         prior_grads = None
         if optimizer is None:
             prior_grads = [
-                (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
+                (parameter, parameter.grad)
                 for parameter in self.model.parameters()
             ]
+            for parameter, _ in prior_grads:
+                parameter.grad = None
         try:
             loss.backward()
 
