@@ -7,8 +7,13 @@ See `tests/test_mathematical_contracts.py` for independent hand-checkable oracle
 
 ## Compatibility
 
-- Every legacy `core.evaluation.evaluate()` key, numeric computation, scale
+- Every legacy `core.evaluation.evaluate()` key, **numeric** computation, scale
   (`SCALE=10000`), and `DynamicGraphState.to_dict()` key is unchanged.
+- **Intentional graph witness correction:** `detect_critical_cycles()` now returns
+  a valid **forward-directed** cycle path (e.g., `A,B,C,A` instead of the
+  reversed invalid path `A,C,B,A`). This changes `critical_cycles` list values
+  on affected cyclic graphs but does **not** change `cycle_pressure` counts
+  or any serialized field names.
 - `QueryEngine.describe()` receives corrected display labels/descriptions
   imported from `core.metric_contracts.QUERY_METRIC_DEFINITIONS`.
   **Its DataFrame row labels change**; integrations should use stable serialized
