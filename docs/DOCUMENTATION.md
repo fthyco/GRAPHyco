@@ -594,10 +594,11 @@ evaluate_model_dynamic(
     inputs: torch.Tensor,
     loss_fn: Optional[Callable] = None,
     mode: str = "trace",
-    concrete_args: Optional[Dict] = None
+    concrete_args: Optional[Dict] = None,
+    strict_trace: bool = False
 ) -> Dict[str, Any]
 ```
-Combined static + dynamic evaluation via `DynamicExecutionBridge`.
+Combined static + dynamic evaluation via `DynamicExecutionBridge`. Returns `graph_provenance` in addition to prior keys. With `strict_trace=True`, raises on FX trace failure instead of silently using module containment.
 
 ---
 
