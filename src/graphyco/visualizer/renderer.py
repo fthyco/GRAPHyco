@@ -73,14 +73,23 @@ class Renderer:
         )
         html = html.replace('<script src="visualizer.js"></script>\n', "")
 
-        # Inject data into the embedded-data tag
-        if data is not None:
-            if isinstance(data, dict):
-                data_json = json.dumps(data)
-            else:
-                data_json = str(data)
-        else:
+        # The embedding is inside a <script type="application/json"> tag.
+        # A JSON string containing </script> still terminates that HTML
+        # element even though it would be valid JSON. Escaping raw HTML
+        # delimiters prevents data from becoming executable markup.
+        if data is None:
             data_json = ""
+        else:
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                raise TypeError("Embedded benchmark data must be a JSON object")
+            data_json = json.dumps(data, ensure_ascii=True)
+            data_json = (
+                data_json.replace("<", "\\u003c")
+                .replace(">", "\\u003e")
+                .replace("&", "\\u0026")
+            )
 
         html = html.replace("<!-- DATA_PLACEHOLDER -->", data_json)
 
