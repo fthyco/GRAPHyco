@@ -11,6 +11,7 @@ import torch.nn as nn
 from scipy.stats import pearsonr, spearmanr
 from typing import Callable, Tuple
 from ..bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
+from ..core.metric_contracts import QUERY_METRIC_DEFINITIONS
 
 class QueryEngine:
     """Unified query engine for computational graph topology and dynamic flow metrics.
@@ -157,16 +158,7 @@ class QueryEngine:
                 "Install it with: pip install graphyco[query]"
             ) from None
 
-        metric_definitions = [
-            ("density", "Graph Density (D)", "Edge connectivity ratio |E| / (|V|(|V|-1))"),
-            ("coherence", "Flow Coherence (C)", "Conservation of incoming vs outgoing gradient flow"),
-            ("topological_bottleneck", "Topological Bottleneck", "Peak node betweenness centrality in DAG"),
-            ("resilience", "Structural Resilience (R)", "Path connectivity retention under single-node ablation"),
-            ("grad_bottleneck_gmax", "Dynamic Bottleneck (G_max)", "Peak gradient concentration factor relative to mean"),
-            ("bottleneck_node", "Bottleneck Node", "Layer exhibiting maximal gradient concentration"),
-            ("spearman_act_grad", "Spearman Rank (rho_AG)", "Rank correlation between forward activations and gradients"),
-            ("mean_stability_cv", "Mean Stability (CV)", "Coefficient of variation across recorded steps"),
-        ]
+        metric_definitions = QUERY_METRIC_DEFINITIONS
 
         if siblings or (arch is not None and str(arch).lower() in ("all", "siblings")):
             archs = self.list_architectures()
