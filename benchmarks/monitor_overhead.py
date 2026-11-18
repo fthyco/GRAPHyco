@@ -40,10 +40,11 @@ def _train(case: str, steps: int, warmup: int, width: int) -> dict:
     opt = torch.optim.SGD(model.parameters(), lr=0.002)
     inputs = [torch.randn(8, width) for _ in range(warmup + steps)]
     labels = [torch.randn(8, width) for _ in range(warmup + steps)]
-    monitoring_mode = case.replace("_device", "")
+    monitoring_mode = case.replace("_device", "").replace("_sampled", "")
     monitor = (
         LiveTrainingMonitor(
-            model, mode=monitoring_mode, log_interval=1,
+            model, mode=monitoring_mode,
+            log_interval=4 if case.endswith("_sampled") else 1,
             record_edges=True, max_history_steps=32,
             stats_backend="device" if case.endswith("_device") else "cpu",
         )
@@ -96,7 +97,8 @@ def main():
     parser.add_argument("--width", type=int, default=64)
     parser.add_argument("--json", dest="json_path")
     parser.add_argument("--_case", choices=(
-        "plain", "trace", "module", "trace_device", "module_device"
+        "plain", "trace", "module", "trace_device", "module_device",
+        "trace_sampled", "module_sampled"
     ))
     args = parser.parse_args()
     if args.steps < 1 or args.warmup < 1 or args.width < 2:
@@ -107,7 +109,8 @@ def main():
         return
 
     cases = {}
-    for case in ("plain", "trace", "module", "trace_device", "module_device"):
+    for case in ("plain", "trace", "module", "trace_device", "module_device",
+                 "trace_sampled", "module_sampled"):
         command = [
             sys.executable, str(Path(__file__).resolve()),
             "--_case", case,
@@ -125,7 +128,8 @@ def main():
         "results": cases,
         "overhead_factor": {
             case: round(cases[case]["mean_step_ms"] / baseline, 3)
-            for case in ("trace", "module", "trace_device", "module_device")
+            for case in ("trace", "module", "trace_device", "module_device",
+                         "trace_sampled", "module_sampled")
         },
     }
     serialized = json.dumps(result, indent=2)
