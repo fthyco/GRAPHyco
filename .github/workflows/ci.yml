@@ -33,6 +33,9 @@ jobs:
           python -c "import importlib.util; assert importlib.util.find_spec('PySide6') is None"
       - name: Run package regression tests
         run: python -m pytest -q
+      - name: CPU monitor overhead probe (non-gating performance)
+        if: matrix.python-version == '3.11'
+        run: python benchmarks/monitor_overhead.py --steps 3 --warmup 1 --width 16 --json /tmp/graphyco-cpu-perf.json
       - name: Build distributable wheel
         run: python -m build --wheel --no-isolation
       - name: Verify static assets inside wheel
