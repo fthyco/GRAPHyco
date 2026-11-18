@@ -10,7 +10,7 @@ import torch
 from torch import nn
 from torch.fx import symbolic_trace
 
-from graphyco.bridge.torch_bridge import evaluate_model, module_to_graph, trace_to_graph
+from graphyco.bridge.torch_bridge import evaluate_model, evaluate_model_dynamic, module_to_graph, trace_to_graph
 from graphyco.bridge.grad_bridge import DynamicExecutionBridge, LiveTrainingMonitor
 from graphyco.core.invariants import validate_invariants, InvariantViolationError
 from graphyco.visualizer.query import extract_benchmark_json, get_canonical_models
@@ -192,6 +192,18 @@ def test_dynamic_fallback_preserves_graph_provenance():
     state = bridge.step(torch.ones(2, 4))
     assert state.graph_state.provenance["graph_kind"] == "module_hierarchy"
     assert state.to_dict()["static_graph"]["provenance"]["trace_status"] == "failed"
+
+
+def test_dynamic_evaluate_wrapper_exposes_strict_tracing_and_provenance():
+    model = DynamicBranch()
+    x = torch.ones(2, 4)
+    with pytest.raises(Exception):
+        evaluate_model_dynamic(model, x, strict_trace=True)
+    result = evaluate_model_dynamic(model, x, strict_trace=False)
+    assert result["graph_provenance"]["graph_kind"] == "module_hierarchy"
+    assert result["graph_provenance"]["trace_status"] == "failed"
+    assert result["dynamic_graph_state"].graph_state is result["graph_state"]
+
 
 
 def test_bridges_symbolically_trace_only_once():
