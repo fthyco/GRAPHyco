@@ -12,7 +12,8 @@ permissions:
 
 jobs:
   core-smoke:
-    runs-on: ubuntu-latest
+    # Pin a runner with Python 3.9 toolcache for the advertised version matrix.
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
