@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.fx import GraphModule, Interpreter, Node as FxNode
 
-from core.primitives import SCALE
+from ..core.primitives import SCALE
 
 
 # ══════════════════════════════════════════════════════════════
