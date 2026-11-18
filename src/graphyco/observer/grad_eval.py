@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-from core.primitives import Edge, GraphState, SCALE, checked_mul
+from ..core.primitives import Edge, GraphState, SCALE, checked_mul
 from .grad_observer import DynamicNodeRecord, TensorStats
 
 
