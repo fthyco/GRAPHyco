@@ -52,8 +52,19 @@ class TensorStats:
         }
 
 
-def compute_tensor_stats(t: Optional[torch.Tensor], scale: int = SCALE) -> Optional[TensorStats]:
-    """Computes full mathematical statistics for a tensor in an observational manner."""
+def compute_tensor_stats(
+    t: Optional[torch.Tensor], scale: int = SCALE, backend: str = "cpu"
+) -> Optional[TensorStats]:
+    """Compute exact summary fields, optionally reducing on the tensor device.
+
+    backend='cpu' retains the historical float64 CPU reduction path.
+    backend='device' reduces on the source device and transfers a small
+    packed vector of scalar statistics to the host once. On CUDA, this
+    avoids copying the entire activation/gradient tensor to CPU, though
+    double precision reductions may still be expensive on some GPUs.
+    """
+    if backend not in ("cpu", "device"):
+        raise ValueError("stats backend must be 'cpu' or 'device'")
     if t is None:
         return None
 
@@ -76,6 +87,39 @@ def compute_tensor_stats(t: Optional[torch.Tensor], scale: int = SCALE) -> Optio
             normalized_magnitude=0.0,
             fixed_point_rms=0,
         )
+
+    if backend == "device":
+        with torch.no_grad():
+            flat = t.detach().flatten().to(dtype=torch.float64)
+            finite_mask = torch.isfinite(flat)
+            zero_count = (flat == 0.0).sum().to(dtype=torch.float64)
+            non_finite_count = (~finite_mask).sum().to(dtype=torch.float64)
+            safe_flat = torch.nan_to_num(
+                flat, nan=0.0, posinf=1e12, neginf=-1e12
+            )
+            l1 = torch.linalg.norm(safe_flat, ord=1)
+            l2 = torch.linalg.norm(safe_flat, ord=2)
+            # One host synchronization for all scalar fields on CUDA.
+            values = torch.stack([
+                safe_flat.mean(),
+                safe_flat.std(unbiased=False) if numel > 1 else l2 * 0.0,
+                safe_flat.min(),
+                safe_flat.max(),
+                l1, l2, zero_count, non_finite_count,
+            ]).to(device="cpu").tolist()
+            mean, std, min_val, max_val, l1_val, l2_val, zeros, non_finite = (
+                float(value) for value in values
+            )
+            rms = l2_val / math.sqrt(numel)
+            return TensorStats(
+                numel=numel, mean=mean, std=std,
+                min_val=min_val, max_val=max_val,
+                l1_norm=l1_val, l2_norm=l2_val, rms=rms,
+                zero_fraction=zeros / numel,
+                non_finite_fraction=non_finite / numel,
+                normalized_magnitude=rms,
+                fixed_point_rms=int(round(rms * scale)),
+            )
 
     with torch.no_grad():
         # Detach and convert to double on CPU for numerical stability
@@ -197,9 +241,15 @@ class FXGradObserver(Interpreter):
     4. Parameter gradients dL/dW_i for modules invoked by call_module nodes.
     """
 
-    def __init__(self, module: GraphModule, record_edges: bool = True):
+    def __init__(
+        self, module: GraphModule, record_edges: bool = True,
+        stats_backend: str = "cpu",
+    ):
         super().__init__(module)
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
         self.record_edges = record_edges
+        self.stats_backend = stats_backend
         self.reset()
 
     def reset(self) -> None:
@@ -286,9 +336,9 @@ class FXGradObserver(Interpreter):
         all_node_names = set(self.raw_activations.keys()) | set(self.raw_activation_grads.keys()) | set(self.node_types.keys())
 
         for name in sorted(all_node_names):
-            act_stats = compute_tensor_stats(self.raw_activations.get(name))
-            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name))
-            param_stats = compute_tensor_stats(self.raw_param_grads.get(name))
+            act_stats = compute_tensor_stats(self.raw_activations.get(name), backend=self.stats_backend)
+            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name), backend=self.stats_backend)
+            param_stats = compute_tensor_stats(self.raw_param_grads.get(name), backend=self.stats_backend)
 
             ratio = None
             if act_stats is not None and grad_stats is not None:
@@ -308,7 +358,7 @@ class FXGradObserver(Interpreter):
 
         edge_records: Dict[Tuple[str, str], TensorStats] = {}
         for edge_key, grad_t in sorted(self.raw_edge_grads.items()):
-            e_stats = compute_tensor_stats(grad_t)
+            e_stats = compute_tensor_stats(grad_t, backend=self.stats_backend)
             if e_stats is not None:
                 edge_records[edge_key] = e_stats
 
@@ -328,8 +378,11 @@ class ModuleGradObserver:
     recent invocation for a reused module name (not the full call history).
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, stats_backend: str = "cpu"):
         self.model = model
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
         self.handles: List[Any] = []
         self.enabled = True
         self.reset()
@@ -398,9 +451,9 @@ class ModuleGradObserver:
         records: Dict[str, DynamicNodeRecord] = {}
         all_names = set(self.raw_activations.keys()) | set(self.raw_activation_grads.keys()) | set(self.module_types.keys())
         for name in sorted(all_names):
-            act_stats = compute_tensor_stats(self.raw_activations.get(name))
-            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name))
-            param_stats = compute_tensor_stats(self.raw_param_grads.get(name))
+            act_stats = compute_tensor_stats(self.raw_activations.get(name), backend=self.stats_backend)
+            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name), backend=self.stats_backend)
+            param_stats = compute_tensor_stats(self.raw_param_grads.get(name), backend=self.stats_backend)
 
             ratio = None
             if act_stats is not None and grad_stats is not None:
