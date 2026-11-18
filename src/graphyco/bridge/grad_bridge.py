@@ -21,7 +21,7 @@ from ..observer.grad_observer import (
     TensorStats,
     compute_tensor_stats,
 )
-from .torch_bridge import module_to_graph, trace_to_graph
+from .torch_bridge import module_to_graph, _fx_to_graph
 
 
 # ══════════════════════════════════════════════════════════════
@@ -120,22 +120,33 @@ class DynamicExecutionBridge:
         mode: str = "trace",
         concrete_args: Optional[Dict] = None,
         record_edges: bool = True,
+        strict_trace: bool = False,
     ):
         self.model = model
+        if mode not in ("trace", "module"):
+            raise ValueError(f"Unknown extraction mode: {mode!r}")
         self.mode = mode
         self.concrete_args = concrete_args
         self.record_edges = record_edges
 
-        # Extract static graph representation
+        # A single FX trace feeds both the graph and the interpreter:
+        # previously they were traced independently and could diverge.
         if self.mode == "trace":
             try:
-                self.static_state = trace_to_graph(model, concrete_args=concrete_args)
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
+                self.static_state = _fx_to_graph(model, self.traced_module)
                 self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
-            except Exception:
-                # Fallback to module mode if FX symbolic trace fails
+            except Exception as exc:
+                if strict_trace:
+                    raise
                 self.mode = "module"
                 self.static_state = module_to_graph(model)
+                self.static_state.provenance.update({
+                    "trace_status": "failed",
+                    "fallback_from": "fx_symbolic_trace",
+                    "fallback_reason_type": type(exc).__name__,
+                    "fallback_reason": str(exc)[:500],
+                })
                 self.traced_module = None
                 self.observer = ModuleGradObserver(model)
         else:
@@ -318,8 +329,11 @@ class LiveTrainingMonitor:
         concrete_args: Optional[Dict] = None,
         log_interval: int = 1,
         record_edges: bool = True,
+        strict_trace: bool = False,
     ):
         self.model = model
+        if mode not in ("trace", "module"):
+            raise ValueError(f"Unknown extraction mode: {mode!r}")
         self.mode = mode
         self.concrete_args = concrete_args
         self.log_interval = max(1, log_interval)
@@ -327,12 +341,20 @@ class LiveTrainingMonitor:
 
         if self.mode == "trace":
             try:
-                self.static_state = trace_to_graph(model, concrete_args=concrete_args)
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
+                self.static_state = _fx_to_graph(model, self.traced_module)
                 self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
-            except Exception:
+            except Exception as exc:
+                if strict_trace:
+                    raise
                 self.mode = "module"
                 self.static_state = module_to_graph(model)
+                self.static_state.provenance.update({
+                    "trace_status": "failed",
+                    "fallback_from": "fx_symbolic_trace",
+                    "fallback_reason_type": type(exc).__name__,
+                    "fallback_reason": str(exc)[:500],
+                })
                 self.traced_module = None
                 self.observer = ModuleGradObserver(model)
         else:
