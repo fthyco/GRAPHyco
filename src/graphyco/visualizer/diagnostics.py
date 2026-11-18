@@ -9,8 +9,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import torch
 import torch.nn as nn
 
-from bridge.grad_bridge import DynamicGraphState, LiveTrainingMonitor
-from observer.grad_observer import compute_tensor_stats, TensorStats
+from ..bridge.grad_bridge import DynamicGraphState, LiveTrainingMonitor
+from ..observer.grad_observer import compute_tensor_stats, TensorStats
 
 
 class GradientHealthStatus:
