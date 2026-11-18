@@ -60,12 +60,13 @@ def detect_critical_cycles(state: GraphState) -> List[List[str]]:
                 stack[-1] = (node, idx + 1)
                 nbr = neighbours[idx]
                 if colour.get(nbr, WHITE) == GREY:
-                    cycle = [nbr]
-                    for sn, _ in reversed(stack):
-                        cycle.append(sn)
-                        if sn == nbr:
-                            break
-                    cycles.append(cycle)
+                    # The DFS stack is in forward-edge order. A back edge
+                    # node -> nbr closes the directed cycle nbr ... node -> nbr.
+                    # The previous implementation reversed the stack and
+                    # reported an invalid edge ordering on length >= 3 cycles.
+                    path = [sn for sn, _ in stack]
+                    start_idx = path.index(nbr)
+                    cycles.append(path[start_idx:] + [nbr])
                 elif colour.get(nbr, WHITE) == WHITE:
                     colour[nbr] = GREY
                     parent[nbr] = node
