@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # Do not disable Chromium's sandbox globally. When running as root or in a
 # restricted container the host must configure QtWebEngine securely; this
-# library must never silently set --no-sandbox.
+# library must not silently disable browser sandbox protections.
 import json
 import os
 import sys
