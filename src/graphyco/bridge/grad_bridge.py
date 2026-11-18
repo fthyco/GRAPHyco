@@ -330,7 +330,10 @@ def monitor_model(
 ) -> DynamicGraphState:
     """One-line convenience function to monitor a forward and backward pass on a PyTorch model."""
     bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args)
-    return bridge.step(inputs=inputs, loss_fn=loss_fn)
+    try:
+        return bridge.step(inputs=inputs, loss_fn=loss_fn)
+    finally:
+        bridge.close()
 
 
 # ══════════════════════════════════════════════════════════════
