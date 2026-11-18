@@ -185,9 +185,9 @@ limitations.
 | **INV-6** | `attributes_nonempty` | $\forall v \in V,\; |v.\text{attributes}| \ge 1$ | Requires every node to declare structural attributes (e.g. operator type, tensor shape, parameters). |
 | **INV-7** | `acyclic_critical_subgraph` | $\text{Cycles}(G_{\text{crit}}) = \emptyset$ where $G_{\text{crit}} = (V, \{e \in E \mid e.\text{critical}\})$ | Guarantees that the critical dependency subgraph is a strict DAG, preventing computational deadlocks. |
 
-### 4. Non-Intrusive Autograd Interception
+### 4. Runtime Autograd Instrumentation and Verification Limits
 
-Graphyco is designed to observe gradient flow without altering forward numerical outputs or modifying PyTorch autograd gradient values:
+Graphyco collects gradient telemetry with hooks and, in FX mode, extra identity-view autograd operations. Paired CPU tests support parity for covered deterministic models, **not arbitrary PyTorch programs**. See [monitor verification](GRADIENT_MONITORING_VERIFICATION.md):
 
 1. **Edge Gradient Interception (`EdgeAutogradHook`):**
    To measure directed edge gradient attenuation without breaking the PyTorch computational graph, an autograd function is placed along edge transitions:
@@ -195,8 +195,9 @@ Graphyco is designed to observe gradient flow without altering forward numerical
    - In the backward pass, incoming gradient $\frac{\partial L}{\partial y}$ is intercepted, its statistics are recorded in an external sink dictionary, and it is passed unchanged to $\frac{\partial L}{\partial x}$.
 2. **Detached Double-Precision Statistics (`TensorStats`):**
    All statistics (RMS, $L_1$, $L_2$, mean, std, sparsity) are computed on detached `float64` tensor copies (`t.detach().to(torch.float64)`). Non-finite values (`NaN`, `Inf`) are sanitized with `torch.nan_to_num` for reporting while triggering health alerts.
-3. **Observational Intent (Equivalence Pending):**
-   Diagnostic statistics are computed from detached tensors, but monitoring may insert identity-view autograd nodes and temporarily intercept model execution. General forward, gradient and optimizer-update parity requires independent runtime tests (Stage 4); it is not yet a guarantee.
+3. **Audited Runtime Equivalence (Restricted Scope):**
+   Stage 4 compares outputs, losses, parameter gradients, optimizer states and seeded dropout evolution on representative CPU networks (SGD and Adam, both FX and native module monitoring). The live FX mode still substitutes `model.forward` during observed steps and is **not proven equivalent** for stateful Python forwards, DDP, AMP, `torch.compile`, in-place/custom operators or arbitrary architectures.
+4. **Native Module Mode:** Module observation uses lightweight forward and output tensor gradient hooks without `register_full_backward_hook`. Multiple invocations of the same module retain the latest per-module sample rather than a complete invocation-indexed trace.
 
 ### 5. Degree Geometry & Topological Complexity
 
@@ -638,14 +639,16 @@ DynamicExecutionBridge(
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
     record_edges: bool = True,
-    strict_trace: bool = False
+    strict_trace: bool = False,
+    max_history_steps: Optional[int] = 128
 )
 ```
 
 | Method | Description |
 |---|---|
 | `step(inputs, target, loss_fn, optimizer) -> DynamicGraphState` | Execute one forward-backward pass, compute all metrics, optionally update parameters |
-| `run_training_trajectory(dataloader, loss_fn, optimizer, steps) -> List[DynamicGraphState]` | Multi-step recording across batch sequences |
+| `run_training_trajectory(dataloader, loss_fn, optimizer, steps) -> List[DynamicGraphState]` | Recent-window trajectory (max `max_history_steps` full states by default) |
+| `close()` | Remove hooks and close the bridge; idempotent |
 
 The `step()` method executes this pipeline:
 1. Forward pass → record node activations
@@ -654,13 +657,13 @@ The `step()` method executes this pipeline:
 4. Capture module parameter gradients
 5. Extract `DynamicNodeRecord` and `TensorStats`
 6. Run `evaluate_dynamic_flow(...)` for all dynamic metrics
-7. Optional `optimizer.step()`
+7. Optional `optimizer.step()`. Without an optimizer, existing parameter `.grad` values are restored after the diagnostic backward; model buffers, RNG and Python forward side effects may still change.
 
 ---
 
 **`LiveTrainingMonitor`**
 
-Non-intrusive context manager for active training loops.
+Instrumented context manager for active training loops. With `mode="module"`, the original model forward is executed; FX mode temporarily substitutes it with the symbolic interpreter. Both are verified only on the tested CPU models.
 
 ```python
 LiveTrainingMonitor(
@@ -668,7 +671,9 @@ LiveTrainingMonitor(
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
     log_interval: int = 1,
-    record_edges: bool = True
+    record_edges: bool = True,
+    strict_trace: bool = False,
+    max_history_steps: Optional[int] = 128
 )
 ```
 
@@ -680,7 +685,8 @@ LiveTrainingMonitor(
 | `get_latest_bottleneck()` | `Dict[str, Any]` | `{bottleneck_node, max_concentration}` |
 | `get_live_anomalies()` | `Dict[str, Any]` | Vanishing and exploding node lists |
 | `get_temporal_stability()` | `Dict[str, Any]` | Per-node CV and classification |
-| `export_live_json(path, indent)` | `None` | Export current state to JSON file |
+| `export_live_json(path, indent)` | `None` | Export the **retained window** to JSON |
+| `close()` | `None` | Detach persistent module hooks and prevent future observations |
 
 #### Functions
 
