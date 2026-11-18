@@ -38,6 +38,26 @@ jobs:
         run: python benchmarks/monitor_overhead.py --steps 3 --warmup 1 --width 16 --json /tmp/graphyco-cpu-perf.json
       - name: Build distributable wheel
         run: python -m build --wheel --no-isolation
+      - name: Build distributable source archive
+        run: python -m build --sdist --no-isolation
+      - name: Verify source archive includes runtime assets
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+          files = glob.glob("dist/*.tar.gz")
+          assert len(files) == 1, files
+          with tarfile.open(files[0], "r:gz") as archive:
+              names = archive.getnames()
+          for asset in (
+              "pyproject.toml", "README.md",
+              "src/graphyco/visualizer/static/visualizer.html",
+              "src/graphyco/visualizer/static/visualizer.css",
+              "src/graphyco/visualizer/static/visualizer.js",
+          ):
+              assert any(name.endswith("/" + asset) for name in names), asset
+          print("sdist contains metadata, readme, and visualizer assets")
+          PY
       - name: Verify static assets inside wheel
         run: |
           python - <<'PY'
@@ -66,4 +86,21 @@ jobs:
           assert 'id="embedded-data"' in Renderer().assemble({"architectures": {}})
           assert "site-packages" in graphyco.__file__, graphyco.__file__
           print("Built wheel import and core extraction successful")
+          PY
+      - name: Verify headless CLI from installed wheel
+        run: |
+          cd /tmp
+          /tmp/graphyco-wheel-venv/bin/graphyco --model resnet --steps 1 --query summary > /tmp/graphyco-wheel-cli.json
+          /tmp/graphyco-wheel-venv/bin/python -m json.tool /tmp/graphyco-wheel-cli.json >/dev/null
+      - name: Install and exercise source archive outside repository
+        run: |
+          python -m venv --system-site-packages /tmp/graphyco-sdist-venv
+          /tmp/graphyco-sdist-venv/bin/python -m pip install --no-deps --force-reinstall dist/*.tar.gz
+          cd /tmp
+          /tmp/graphyco-sdist-venv/bin/python - <<'PY'
+          import graphyco
+          from graphyco.visualizer.renderer import Renderer
+          assert "site-packages" in graphyco.__file__, graphyco.__file__
+          assert 'id="embedded-data"' in Renderer().assemble({"architectures": {}})
+          print("Built source archive install/import successful")
           PY
