@@ -257,6 +257,7 @@ def evaluate_model_dynamic(
     loss_fn: Optional[Callable] = None,
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
+    strict_trace: bool = False,
 ) -> Dict[str, Any]:
     """Evaluates both static topology and dynamic forward/backward execution flow.
 
@@ -265,7 +266,7 @@ def evaluate_model_dynamic(
     """
     from .grad_bridge import DynamicExecutionBridge
 
-    bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args)
+    bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args, strict_trace=strict_trace)
     dyn_state = bridge.step(inputs=inputs, loss_fn=loss_fn)
 
     total_params = sum((p.numel() for p in model.parameters()))
