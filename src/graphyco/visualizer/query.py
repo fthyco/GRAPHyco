@@ -187,7 +187,7 @@ class QueryEngine:
             rows.append(item)
 
         df = pd.DataFrame(rows)
-        df.set_index("Metric", inplace=True)
+        df = df.set_index("Metric")
         return df
 
     def get_siblings(self, node_id: str, arch: Optional[str] = None) -> List[str]:
