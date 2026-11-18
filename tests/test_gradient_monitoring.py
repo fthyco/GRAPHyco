@@ -217,8 +217,9 @@ def test_tuple_output_hook_attaches_first_tensor_not_last():
     # First output is the only activation represented by the public node
     # record. Its gradient must not be overwritten by other tuple members.
     observer._attach_tensor_hook("tuple", x)
-    observer._attach_tensor_hook("tuple", y)
+    observer._attach_tensor_hook("tuple", y, component_index=1)
     (x * 3 + y * 7).sum().backward()
     # This test exposes the undocumented overwrite; the proper tuple-aware
     # fix is to retain component-specific gradients and the first canonical one.
     assert torch.equal(observer.raw_activation_grads["tuple"], torch.tensor([3.0]))
+    assert torch.equal(observer.raw_output_component_grads[("tuple", 1)], torch.tensor([7.0]))
