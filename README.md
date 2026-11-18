@@ -6,7 +6,7 @@ Computational graph topology and dynamic gradient-flow monitoring for PyTorch.
 
 ## What is Graphyco
 
-Graphyco extracts a formal computational graph from any PyTorch model and monitors gradient flow during training.
+Graphyco analyzes PyTorch models with FX symbolic dependencies when tracing succeeds, or with an explicitly labeled module-hierarchy fallback when tracing fails. The latter does not claim actual tensor dataflow. Gradient monitoring is available in the runtime bridge.
 
 - **Static topology** — Directed edge-count density, degree-distribution uniformity, degree-concentration and structural-cost proxies, plus 7 structural invariants in deterministic fixed-point arithmetic.
 - **Dynamic gradient-flow** — Per-node activation/gradient RMS, edge attenuation, bottleneck concentration ($G_{\max}$), forward-backward alignment, temporal stability.
@@ -24,7 +24,8 @@ pip install graphyco[gui]
 ```
 
 > **Full technical documentation**: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)  
-> **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.
+> **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.  
+> **Graph fidelity, hierarchy fallback, and provenance**: [docs/GRAPH_FIDELITY.md](docs/GRAPH_FIDELITY.md).
 
 ---
 
@@ -58,6 +59,7 @@ model = nn.Sequential(nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 10))
 result = evaluate_model(model, mode="trace")  # or mode="module"
 
 ev = result["evaluation"]
+print("Graph provenance:", result["graph_provenance"])
 print(f"Nodes: {ev['node_count']}, Edges: {ev['edge_count']}")
 print(f"Degree-Concentration Proxy: {ev['topological_bottleneck_ratio'] / SCALE:.4f}")
 print(f"Structural Cost Proxy: {ev['structural_perturbation_resilience'] / SCALE:.4f}")
@@ -153,6 +155,27 @@ engine.describe(siblings=True)        # cross-architecture comparison
 engine.get_bottlenecks()              # ranked bottleneck nodes
 engine.get_neighbors("_2")            # DAG predecessors, successors, siblings
 ```
+
+### 5a. Bundled Graph-Fidelity Examples
+
+The `--model` CLI and `get_canonical_models()` now ship with five **small toy
+models**: vector MLP, vector residual block, densely connected vector block,
+vector U-Net-style skip, and multi-head self-attention. They demonstrate
+graph motifs; they are not full benchmark implementations or pretrained
+ResNet/DenseNet/U-Net checkpoints.
+
+```python
+from graphyco.visualizer.query import get_canonical_models
+from graphyco import evaluate_model
+
+model, x = get_canonical_models()["ResNet Block"]
+result = evaluate_model(model, strict_trace=True)
+print(result["graph_provenance"])  # fx_symbolic_trace, symbolic_only
+```
+
+When FX fails, `evaluate_model(..., strict_trace=True)` raises instead of
+silently substituting a hierarchy. Graphs of different kinds must not be
+compared as equivalent topologies.
 
 ### 6. CLI
 
