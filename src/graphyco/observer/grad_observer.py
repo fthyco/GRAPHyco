@@ -322,8 +322,10 @@ class FXGradObserver(Interpreter):
 class ModuleGradObserver:
     """Observational runtime monitor for PyTorch nn.Module hierarchies.
 
-    Uses register_forward_hook and register_full_backward_hook to monitor
-    module-level activations and output gradients without symbolic tracing.
+    Uses module forward hooks plus tensor output gradient hooks. It does not
+    install register_full_backward_hook, avoiding PyTorch's extra input/output
+    views and the associated no-input-grad warning. Hooks capture the most
+    recent invocation for a reused module name (not the full call history).
     """
 
     def __init__(self, model: nn.Module):
@@ -346,26 +348,36 @@ class ModuleGradObserver:
             # Only monitor leaf modules
             if len(list(module.children())) == 0:
                 self.module_types[name] = type(module).__name__
-                h1 = module.register_forward_hook(self._make_fwd_hook(name))
-                h2 = module.register_full_backward_hook(self._make_bwd_hook(name))
-                self.handles.extend([h1, h2])
+                self.handles.append(
+                    module.register_forward_hook(self._make_fwd_hook(name))
+                )
 
     def _make_fwd_hook(self, name: str) -> Callable:
         def hook(module: nn.Module, inp: Any, outp: Any) -> None:
             if not self.enabled:
                 return
+            # Only the first tensor output is represented as the public
+            # module activation. Tuple components beyond the first are not
+            # silently re-labeled as that activation.
             if isinstance(outp, torch.Tensor):
-                self.raw_activations[name] = outp.detach().clone()
-            elif isinstance(outp, (tuple, list)) and len(outp) > 0 and isinstance(outp[0], torch.Tensor):
-                self.raw_activations[name] = outp[0].detach().clone()
-        return hook
+                tensor = outp
+            elif isinstance(outp, (tuple, list)):
+                tensor = next(
+                    (item for item in outp if isinstance(item, torch.Tensor)),
+                    None,
+                )
+            else:
+                tensor = None
 
-    def _make_bwd_hook(self, name: str) -> Callable:
-        def hook(module: nn.Module, grad_input: Any, grad_output: Any) -> None:
-            if not self.enabled:
+            if tensor is None:
                 return
-            if grad_output and len(grad_output) > 0 and isinstance(grad_output[0], torch.Tensor):
-                self.raw_activation_grads[name] = grad_output[0].detach().clone()
+            self.raw_activations[name] = tensor.detach().clone()
+            if tensor.requires_grad:
+                def record_output_grad(grad: torch.Tensor) -> None:
+                    if self.enabled and grad is not None:
+                        self.raw_activation_grads[name] = grad.detach().clone()
+
+                tensor.register_hook(record_output_grad)
         return hook
 
     def capture_parameter_gradients(self) -> None:
