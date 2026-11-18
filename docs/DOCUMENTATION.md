@@ -161,8 +161,15 @@ $$G_t = (V, E, X_t, A_t, G_t)$$
 #### Tracing Strategy & Fallback
 
 Graphyco implements a dual-strategy graph extraction mechanism:
-1. **PyTorch FX Symbolic Tracing (`trace_to_graph`):** Captures complete operator-level DAGs by tracing symbolic `Proxy` objects through the model's `forward` pass. Operational inputs (`args`) are mapped to critical dependencies, while keyword inputs (`kwargs`) are mapped to informational dependencies.
-2. **Recursive Module Inspection Fallback (`module_to_graph`):** When models contain dynamic Python control flow, data-dependent branches, or external C++ bindings that cannot be symbolically traced, Graphyco automatically falls back to inspecting the `nn.Module` hierarchy. Nodes represent individual layer modules, hierarchical parent-child relationships form operational edges, and sequential execution order forms critical path edges.
+1. **PyTorch FX Symbolic Tracing (`trace_to_graph`):** Captures symbolic operator dependencies by tracing PyTorch `Proxy` objects through the model's `forward` pass. Both positional and keyword inputs are actual FX dependencies and are marked `critical=True`; this is a symbolic graph, not a runtime-verified instance trace.
+2. **Recursive Module Inspection Fallback (`module_to_graph`):** When tracing fails or `mode="module"` is requested, nodes represent registered modules, and `contains` edges represent *only* real parent-child module membership. No sequential execution links are inferred from module registration order. Metadata labels the graph `module_hierarchy` and `execution_verified=False`.
+
+The graph's optional `provenance` field identifies whether edges are FX
+dependencies or mere registered-module containment. A failed FX attempt
+records a diagnostic `trace_status="failed"`; `strict_trace=True` disables
+fallback and raises the original exception. See
+[Graph Fidelity and Provenance](GRAPH_FIDELITY.md) for API and evidence
+limitations.
 
 ### 3. Seven Enforced Graph Invariants
 
@@ -172,7 +179,7 @@ Graphyco implements a dual-strategy graph extraction mechanism:
 |---|---|---|---|
 | **INV-1** | `node_id_format` | $\forall v \in V,\; v.\text{id} \in \text{Regex}(\mathtt{\text{^[a-zA-Z0-9\_-]+\$}})$ | Ensures node identifiers are sanitized and URL/serialization safe. |
 | **INV-2** | `edge_integrity` | $\forall (u, v) \in E,\; u \in V \land v \in V$ | Prohibits dangling edges pointing to or originating from non-existent nodes. |
-| **INV-3** | `port_connectivity` | $\forall v \in V, \forall p \in v.\text{out\_ports},\; \exists u \in V : p \in u.\text{in\_ports}$ | Enforces conservation of internal dataflow ports across connected modules. |
+| **INV-3** | `port_connectivity` | $\forall u,v\in V,\; v.id\in u.out\_ports \iff u.id\in v.in\_ports$ | Validates reciprocal FX producer/consumer references; does not assert tensor-gradient conservation. |
 | **INV-4** | `node_uniqueness` | $\|V\| = \|\text{set}(\{v.\text{id} \mid v \in V\})\|$ | Eliminates duplicate node registrations in the graph registry. |
 | **INV-5** | `graph_liveness` | $\exists v \in V : v.\text{active} = \text{True}$ | Rejects completely dormant or empty computational graphs. |
 | **INV-6** | `attributes_nonempty` | $\forall v \in V,\; |v.\text{attributes}| \ge 1$ | Requires every node to declare structural attributes (e.g. operator type, tensor shape, parameters). |
@@ -548,11 +555,11 @@ PyTorch FX tracing and module-level graph extraction.
 ```python
 module_to_graph(
     model: nn.Module,
-    include_containers: bool = False,
+    include_containers: bool = True,
     min_params: int = 0
 ) -> GraphState
 ```
-Recursive `nn.Module` inspection fallback. Creates nodes for leaf modules, links parent→child hierarchical edges (operational, non-critical) and sequential sibling edges (operational, critical). Use when FX tracing is unsupported (dynamic control flow, RNNs, C++ bindings).
+Recursive `nn.Module` inspection. Default includes root/containers, and emits only direct `contains` parent→child edges (`critical=False`). Does **not** invent sibling order or tensor dataflow. With `include_containers=False`, returns leaf nodes without speculative edges. This deliberately changes the old module-mode topology numbers; consult [graph fidelity notes](GRAPH_FIDELITY.md).
 
 ```python
 trace_to_graph(
@@ -560,18 +567,20 @@ trace_to_graph(
     concrete_args: Optional[Dict] = None
 ) -> GraphState
 ```
-Uses `torch.fx.symbolic_trace` to translate the FX IR into `GraphState`. Maps `args` to operational critical edges and `kwargs` to informational non-critical edges. Handles `call_module`, `call_function`, `call_method`, `placeholder`, and `output` opcodes.
+Uses `torch.fx.symbolic_trace` to translate the FX IR into `GraphState`. Every `all_input_nodes` dependency is represented once; positional references are `operational` and keyword-only references `informational`, both `critical=True`. Each node has reciprocal producer/consumer port references. `provenance` records that the graph is symbolic, not runtime-verified.
 
 ```python
 evaluate_model(
     model: nn.Module,
     mode: str = 'trace',
-    concrete_args: Optional[Dict] = None
+    concrete_args: Optional[Dict] = None,
+    strict_trace: bool = False
 ) -> Dict
 ```
 Static model profiling. Returns:
 - `graph_state`: The extracted `GraphState`
-- `evaluation`: All static topological metrics
+- `graph_provenance`: Graph source, edge semantics and any fallback diagnostics
+- `evaluation`: All static topological metrics (interpretable only for the reported graph type)
 - `model_info`: `{total_parameters, trainable_parameters, layer_types}`
 
 | `mode` | Strategy | When to Use |
@@ -627,7 +636,8 @@ DynamicExecutionBridge(
     model: nn.Module,
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
-    record_edges: bool = True
+    record_edges: bool = True,
+    strict_trace: bool = False
 )
 ```
 
