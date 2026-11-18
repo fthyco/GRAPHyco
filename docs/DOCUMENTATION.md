@@ -195,8 +195,8 @@ Graphyco is designed to observe gradient flow without altering forward numerical
    - In the backward pass, incoming gradient $\frac{\partial L}{\partial y}$ is intercepted, its statistics are recorded in an external sink dictionary, and it is passed unchanged to $\frac{\partial L}{\partial x}$.
 2. **Detached Double-Precision Statistics (`TensorStats`):**
    All statistics (RMS, $L_1$, $L_2$, mean, std, sparsity) are computed on detached `float64` tensor copies (`t.detach().to(torch.float64)`). Non-finite values (`NaN`, `Inf`) are sanitized with `torch.nan_to_num` for reporting while triggering health alerts.
-3. **Zero Autograd Graph Pollution:**
-   All diagnostic hooks operate strictly out-of-place and are detached from the autograd graph, guaranteeing identical parameter updates whether monitoring is active or inactive.
+3. **Observational Intent (Equivalence Pending):**
+   Diagnostic statistics are computed from detached tensors, but monitoring may insert identity-view autograd nodes and temporarily intercept model execution. General forward, gradient and optimizer-update parity requires independent runtime tests (Stage 4); it is not yet a guarantee.
 
 ### 5. Degree Geometry & Topological Complexity
 
