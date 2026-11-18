@@ -4,11 +4,9 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 import torch
 import torch.nn as nn
 from torch.fx import symbolic_trace, Graph, Node as FxNode
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from core.primitives import Edge, GraphState, Node, CapacityVector, DomainConstants
-from core.graph import compute_graph_density, compute_local_density
-from core.evaluation import evaluate
+from ..core.primitives import Edge, GraphState, Node, CapacityVector, DomainConstants
+from ..core.graph import compute_graph_density, compute_local_density
+from ..core.evaluation import evaluate
 _ID_CLEAN = re.compile('[^a-zA-Z0-9_-]')
 
 def _clean_id(name: str) -> str:
