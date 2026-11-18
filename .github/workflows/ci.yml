@@ -2,9 +2,9 @@ name: GRAPHyco package foundation
 
 on:
   push:
-    branches: [main, audit/packaging-foundation]
+    branches: [main, "audit/**"]
   pull_request:
-    branches: [main]
+    branches: [main, "audit/**"]
   workflow_dispatch:
 
 permissions:
