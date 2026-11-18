@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -541,28 +540,9 @@ def compute_ablation_map(graph_state) -> Dict[str, float]:
 
 
 def get_canonical_models() -> Dict[str, Tuple[nn.Module, torch.Tensor]]:
-    """Returns the 5 canonical benchmark architectures with default inputs."""
-    try:
-        from validate_framework import DenseBlock, MLP, ResNetBlock, SelfAttentionToy, UNetToy
-    except ImportError:
-        pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        cands = [
-            os.path.join(os.getcwd(), "validation"),
-            os.path.abspath(os.path.join(pkg_dir, "..", "..", "..", "validation")),
-            os.path.abspath(os.path.join(pkg_dir, "..", "..", "validation")),
-            os.path.abspath(os.path.join(pkg_dir, "..", "validation")),
-        ]
-        for cand in cands:
-            if os.path.exists(cand) and cand not in sys.path:
-                sys.path.insert(0, cand)
-        from validate_framework import DenseBlock, MLP, ResNetBlock, SelfAttentionToy, UNetToy
-    return {
-        "Sequential MLP": (MLP(depth=4, width=64), torch.randn(8, 64)),
-        "ResNet Block": (ResNetBlock(dim=64), torch.randn(8, 64)),
-        "DenseBlock": (DenseBlock(dim=32), torch.randn(8, 32)),
-        "U-Net Toy": (UNetToy(dim=32), torch.randn(8, 32)),
-        "Self-Attention Toy": (SelfAttentionToy(dim=64), torch.randn(8, 64)),
-    }
+    """Return bundled, deterministically initialized toy graph motifs."""
+    from .canonical_models import get_canonical_models as _get
+    return _get()
 
 
 def extract_benchmark_json(
@@ -620,10 +600,15 @@ def extract_benchmark_json(
         return benchmark_data
 
     # Case B: Canonical name for a single architecture
-    if isinstance(target, str) and target in get_canonical_models():
-        mod, default_inp = get_canonical_models()[target]
-        inp = inputs if inputs is not None else default_inp
-        return extract_benchmark_json(mod, inputs=inp, steps=steps, arch_name=target, export_path=export_path)
+    if isinstance(target, str):
+        candidates = get_canonical_models()
+        if target in candidates:
+            mod, default_inp = candidates[target]
+            inp = inputs if inputs is not None else default_inp
+            return extract_benchmark_json(
+                mod, inputs=inp, steps=steps,
+                arch_name=target, export_path=export_path,
+            )
 
     # Case C: LiveTrainingMonitor
     if isinstance(target, LiveTrainingMonitor):
