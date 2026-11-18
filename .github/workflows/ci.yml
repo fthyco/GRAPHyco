@@ -116,6 +116,8 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq xvfb libxcb-cursor0
+      - name: Install CPU PyTorch for GUI smoke
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Install PySide6 GUI in isolated test job
         run: python -m pip install -e ".[gui,dev]"
       - name: Test real QWebEngine sandbox and navigation policies
