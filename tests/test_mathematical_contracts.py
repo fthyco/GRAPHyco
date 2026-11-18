@@ -11,7 +11,7 @@ import pytest
 import torch
 
 from graphyco.core.primitives import Edge, GraphState, Node, SCALE
-from graphyco.core.graph import compute_graph_density, compute_local_density
+from graphyco.core.graph import compute_graph_density, compute_local_density, detect_critical_cycles
 from graphyco.core.evaluation import (
     connectivity_coherence,
     topological_bottleneck_ratio,
@@ -303,3 +303,29 @@ def test_all_three_vertex_directed_graphs_against_independent_oracles() -> None:
             assert calculated_loss[removed] == pytest.approx(oracle_loss), (
                 mask, removed,
             )
+
+
+def test_cycle_witnesses_follow_real_directed_critical_edges() -> None:
+    cycle = graph(
+        ("A", "B", "C"),
+        [("A", "B"), ("B", "C"), ("C", "A")],
+        critical=True,
+    )
+    assert detect_critical_cycles(cycle) == [["A", "B", "C", "A"]]
+    assert evaluate(cycle)["cycle_pressure"] == 1
+
+    # Exhaustive 3-node directed graphs: every reported witness is a
+    # closed walk using only true, forward-directed critical edges.
+    verts = ("A", "B", "C")
+    possible = [(a, b) for a in verts for b in verts if a != b]
+    for mask in range(1 << len(possible)):
+        arcs = [arc for i, arc in enumerate(possible) if mask & (1 << i)]
+        state = graph(verts, arcs, critical=True)
+        edge_set = set(arcs)
+        for witness in detect_critical_cycles(state):
+            assert witness[0] == witness[-1], (mask, witness)
+            assert len(witness) >= 3, (mask, witness)
+            assert all(
+                (a, b) in edge_set
+                for a, b in zip(witness, witness[1:])
+            ), (mask, witness)
