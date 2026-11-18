@@ -48,3 +48,19 @@ jobs:
               assert any(p.endswith("graphyco/visualizer/static/" + name) for p in names), name
           print("Wheel contains required visualizer static assets")
           PY
+      - name: Install and exercise built wheel
+        run: |
+          python -m venv --system-site-packages /tmp/graphyco-wheel-venv
+          /tmp/graphyco-wheel-venv/bin/python -m pip install --no-deps --force-reinstall dist/*.whl
+          cd /tmp
+          /tmp/graphyco-wheel-venv/bin/python - <<'PY'
+          import graphyco
+          from graphyco.bridge.torch_bridge import trace_to_graph
+          from graphyco.core.primitives import GraphState
+          from graphyco.visualizer.renderer import Renderer
+          from torch import nn
+          assert isinstance(trace_to_graph(nn.Sequential(nn.Linear(2, 2))), GraphState)
+          assert 'id="embedded-data"' in Renderer().assemble({"architectures": {}})
+          assert "site-packages" in graphyco.__file__, graphyco.__file__
+          print("Built wheel import and core extraction successful")
+          PY
