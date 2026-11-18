@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import os
-os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox --disable-gpu --disable-gpu-compositing")
-
-
+# Do not disable Chromium's sandbox globally. When running as root or in a
+# restricted container the host must configure QtWebEngine securely; this
+# library must never silently set --no-sandbox.
 import json
 import os
 import sys
@@ -35,13 +33,28 @@ from PySide6.QtWidgets import (
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
     HAS_WEBENGINE = True
-except Exception:
+except ImportError:
     HAS_WEBENGINE = False
 
 from .diagnostics import GradientHealthStatus, LiveTrainingDiagnostics
 from .query import QueryEngine
 from .renderer import Renderer
+
+
+if HAS_WEBENGINE:
+    class _RestrictedGraphPage(QWebEnginePage):
+        """Block top-level remote and local navigations from benchmark data."""
+
+        def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
+            if url.scheme().lower() in {
+                "http", "https", "ftp", "file", "javascript"
+            }:
+                return False
+            return super().acceptNavigationRequest(
+                url, navigation_type, is_main_frame
+            )
 
 
 class VisualizerDesktopApp(QMainWindow):
@@ -104,8 +117,9 @@ class VisualizerDesktopApp(QMainWindow):
 
         data_dict = self.query_engine.data if self.query_engine else {}
         html_content = self._renderer.assemble(data_dict)
-        base_url = QUrl.fromLocalFile(self._renderer.static_dir + "/")
-        self.web_view.setHtml(html_content, base_url)
+        # All required JS/CSS/data are already embedded. Avoid a file://
+        # base URL, which would grant additional local-file origin privileges.
+        self.web_view.setHtml(html_content, QUrl("about:blank"))
 
 
 
@@ -220,6 +234,20 @@ class VisualizerDesktopApp(QMainWindow):
 
         if HAS_WEBENGINE:
             self.web_view = QWebEngineView(tab_graph)
+            self.web_view.setPage(_RestrictedGraphPage(self.web_view))
+            web_settings = self.web_view.settings()
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+                False,
+            )
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+                False,
+            )
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows,
+                False,
+            )
             layout_graph.addWidget(self.web_view)
             self._render_graph_view()
         else:
