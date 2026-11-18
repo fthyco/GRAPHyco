@@ -87,6 +87,34 @@ def test_renderer_treats_json_string_as_data_not_html():
         Renderer().assemble(17)
 
 
+def test_nonfinite_diagnostic_values_become_valid_embedded_json():
+    data = {
+        "architectures": {"Toy": {
+            "summary": {
+                "nan_metric": float("nan"),
+                "inf_metric": float("inf"),
+                "neg_inf_metric": float("-inf"),
+                "finite_metric": 2.5,
+            }
+        }}
+    }
+    html = Renderer().assemble(data)
+    embedded = re.search(
+        r'<script id="embedded-data" type="application/json">(.*?)</script>',
+        html, re.DOTALL,
+    ).group(1)
+    decoded = json.loads(embedded, parse_constant=lambda x: (_ for _ in ()).throw(
+        ValueError("Non-standard JSON token " + x)
+    ))
+    summary = decoded["architectures"]["Toy"]["summary"]
+    assert summary == {
+        "nan_metric": None,
+        "inf_metric": None,
+        "neg_inf_metric": None,
+        "finite_metric": 2.5,
+    }
+
+
 def test_portable_export_preserves_safe_embedding(tmp_path):
     path = tmp_path / "file.html"
     data = {"architectures": {"<script>test</script>": {}}}
