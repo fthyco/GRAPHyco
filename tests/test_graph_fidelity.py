@@ -116,6 +116,14 @@ def test_port_connectivity_rejects_nonreciprocal_edge_reference():
     with pytest.raises(InvariantViolationError, match="port_connectivity"):
         validate_invariants(state)
 
+    state = trace_to_graph(KeywordDependencies())
+    state.edges = [
+        edge for edge in state.edges
+        if (edge.source, edge.target) != ("left", "add")
+    ]
+    with pytest.raises(InvariantViolationError, match="port_connectivity"):
+        validate_invariants(state)
+
 
 def test_module_fallback_is_real_containment_not_registration_order():
     model = BranchWithResidual()
