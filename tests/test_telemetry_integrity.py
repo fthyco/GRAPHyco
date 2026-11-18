@@ -8,6 +8,7 @@ import torch
 from torch import nn
 
 from graphyco.bridge.grad_bridge import DynamicExecutionBridge
+from graphyco.observer.grad_observer import FXGradObserver, ModuleGradObserver
 
 
 def _model():
@@ -82,3 +83,27 @@ def test_failed_diagnostic_backward_restores_same_original_grads(mode):
         assert bridge.trajectory == []
     finally:
         bridge.close()
+
+
+@pytest.mark.parametrize("mode", ["trace", "module"])
+def test_parameter_snapshot_never_retains_differentiable_gradient_graph(mode):
+    model = _model()
+    if mode == "trace":
+        observer = FXGradObserver(torch.fx.symbolic_trace(model))
+        observer.run(torch.ones(1, 4))
+    else:
+        observer = ModuleGradObserver(model)
+    try:
+        for param in model.parameters():
+            # Deliberately differentiable gradient buffers occur with
+            # higher-order optimization and custom autograd workflows.
+            param.grad = torch.ones_like(param, requires_grad=True)
+        observer.capture_parameter_gradients()
+        assert observer.raw_param_grads
+        for snapshot in observer.raw_param_grads.values():
+            assert not snapshot.requires_grad
+            assert snapshot.grad_fn is None
+    finally:
+        if isinstance(observer, ModuleGradObserver):
+            observer.remove_hooks()
+        model.zero_grad(set_to_none=True)
