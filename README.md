@@ -26,7 +26,8 @@ pip install graphyco[gui]
 > **Full technical documentation**: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)  
 > **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.  
 > **Graph fidelity, hierarchy fallback, and provenance**: [docs/GRAPH_FIDELITY.md](docs/GRAPH_FIDELITY.md).  
-> **Gradient monitoring verification and limitations**: [docs/GRADIENT_MONITORING_VERIFICATION.md](docs/GRADIENT_MONITORING_VERIFICATION.md).
+> **Gradient monitoring verification and limitations**: [docs/GRADIENT_MONITORING_VERIFICATION.md](docs/GRADIENT_MONITORING_VERIFICATION.md).  
+> **Security, profiling and wheel/sdist release gates**: [docs/SECURITY_PERFORMANCE_DISTRIBUTION.md](docs/SECURITY_PERFORMANCE_DISTRIBUTION.md).
 
 ---
 
@@ -119,6 +120,30 @@ side effects. Both modes were checked on paired CPU training tests, **not**
 proven equivalent for arbitrary models. Historical telemetry is bounded to
 the most recent 128 steps unless `max_history_steps=None` is specified.
 Always call `close()` in a `finally` block in long-running applications.
+
+### 3a. Resource and Security Controls
+
+Sampling reduces monitoring overhead at the cost of temporal coverage:
+
+```python
+# Only observe every fourth step, keeping the original Python forward.
+monitor = LiveTrainingMonitor(model, mode="module", log_interval=4)
+# For experiments on GPU, opt in to device-side float64 statistics:
+# monitor = LiveTrainingMonitor(model, mode="module", stats_backend="device")
+# This backend did not improve the small CPU benchmark; benchmark your hardware.
+```
+
+Telemetry snapshots retain only the latest 128 observed steps by default.
+For reproducible CPU timing and approximate process memory:
+
+```bash
+python benchmarks/monitor_overhead.py --steps 100 --warmup 10 --width 64
+```
+
+The Qt GUI now keeps the Chromium sandbox enabled by default, blocks
+external navigation and remote/local page access, and the HTML exporter
+escapes untrusted JSON labels against script-element breakout. These are
+defense-in-depth controls, not a claim of a comprehensive security review.
 
 ### 4. Health Diagnostics
 
