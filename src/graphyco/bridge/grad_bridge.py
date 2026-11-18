@@ -121,6 +121,7 @@ class DynamicExecutionBridge:
         concrete_args: Optional[Dict] = None,
         record_edges: bool = True,
         strict_trace: bool = False,
+        max_history_steps: Optional[int] = 128,
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -128,6 +129,10 @@ class DynamicExecutionBridge:
         self.mode = mode
         self.concrete_args = concrete_args
         self.record_edges = record_edges
+        if max_history_steps is not None and max_history_steps < 1:
+            raise ValueError("max_history_steps must be >= 1 or None")
+        self.max_history_steps = max_history_steps
+        self._closed = False
 
         # A single FX trace feeds both the graph and the interpreter:
         # previously they were traced independently and could diverge.
@@ -174,6 +179,8 @@ class DynamicExecutionBridge:
         4. Parameter gradient capture
         5. Flow statistics and metric evaluation
         """
+        if self._closed:
+            raise RuntimeError("DynamicExecutionBridge has been closed")
         self.step_counter += 1
         self.observer.reset()
 
@@ -216,45 +223,75 @@ class DynamicExecutionBridge:
         # 3. Backward pass
         if optimizer is not None:
             optimizer.zero_grad()
-        loss.backward()
+        # A diagnostic call without an optimizer must not contaminate
+        # parameter .grad values retained by the caller. The backward pass
+        # still runs and model forward/stateful buffers may change.
+        prior_grads = None
+        if optimizer is None:
+            prior_grads = [
+                (parameter, None if parameter.grad is None else parameter.grad.detach().clone())
+                for parameter in self.model.parameters()
+            ]
+        try:
+            loss.backward()
 
-        # 4. Parameter gradient capture
-        self.observer.capture_parameter_gradients()
+            # 4. Parameter gradient capture
+            self.observer.capture_parameter_gradients()
 
-        # 5. Extract records
-        if isinstance(self.observer, FXGradObserver):
-            node_records, edge_records = self.observer.extract_records()
-        else:
-            node_records = self.observer.extract_records()
-            edge_records = {}
+            # 5. Extract records
+            if isinstance(self.observer, FXGradObserver):
+                node_records, edge_records = self.observer.extract_records()
+            else:
+                node_records = self.observer.extract_records()
+                edge_records = {}
 
-        # Build trajectory for temporal analysis
-        trajectory_records = [s.node_records for s in self.trajectory] + [node_records]
+            # Window-aware temporal analysis; keep only a bounded number of
+            # full metric snapshots and node-record dictionaries in memory.
+            previous = self.trajectory
+            if self.max_history_steps is not None:
+                previous = previous[-max(0, self.max_history_steps - 1):] if self.max_history_steps > 1 else []
+            trajectory_records = [s.node_records for s in previous] + [node_records]
 
-        # 6. Evaluate dynamic metrics
-        dynamic_eval = evaluate_dynamic_flow(
-            graph_state=self.static_state,
-            node_records=node_records,
-            edge_records=edge_records,
-            static_perturbation_profile=self.static_profile,
-            trajectory=trajectory_records,
-        )
+            # 6. Evaluate dynamic metrics
+            dynamic_eval = evaluate_dynamic_flow(
+                graph_state=self.static_state,
+                node_records=node_records,
+                edge_records=edge_records,
+                static_perturbation_profile=self.static_profile,
+                trajectory=trajectory_records,
+            )
 
-        state = DynamicGraphState(
-            graph_state=self.static_state,
-            step=self.step_counter,
-            node_records=node_records,
-            edge_records=edge_records,
-            static_evaluation=self.static_evaluation,
-            dynamic_evaluation=dynamic_eval,
-        )
-        self.trajectory.append(state)
+            state = DynamicGraphState(
+                graph_state=self.static_state,
+                step=self.step_counter,
+                node_records=node_records,
+                edge_records=edge_records,
+                static_evaluation=self.static_evaluation,
+                dynamic_evaluation=dynamic_eval,
+            )
+            self.trajectory.append(state)
+            if self.max_history_steps is not None:
+                del self.trajectory[:-self.max_history_steps]
 
-        # 7. Optimizer step if requested
-        if optimizer is not None:
-            optimizer.step()
+            # 7. Optimizer step if requested
+            if optimizer is not None:
+                optimizer.step()
 
-        return state
+            return state
+
+        finally:
+            if prior_grads is not None:
+                for parameter, grad in prior_grads:
+                    parameter.grad = grad
+
+    def close(self) -> None:
+        """Release persistent hooks in module fallback mode."""
+        if self._closed:
+            return
+        if isinstance(self.observer, ModuleGradObserver):
+            self.observer.enabled = False
+            self.observer.remove_hooks()
+        self._closed = True
 
     def run_training_trajectory(
         self,
@@ -330,6 +367,7 @@ class LiveTrainingMonitor:
         log_interval: int = 1,
         record_edges: bool = True,
         strict_trace: bool = False,
+        max_history_steps: Optional[int] = 128,
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -338,6 +376,11 @@ class LiveTrainingMonitor:
         self.concrete_args = concrete_args
         self.log_interval = max(1, log_interval)
         self.record_edges = record_edges
+        if max_history_steps is not None and max_history_steps < 1:
+            raise ValueError("max_history_steps must be >= 1 or None")
+        self.max_history_steps = max_history_steps
+        self._closed = False
+        self._observing = False
 
         if self.mode == "trace":
             try:
@@ -368,6 +411,9 @@ class LiveTrainingMonitor:
         self.latest_state: Optional[DynamicGraphState] = None
         self._new_data: bool = False
         self._orig_forward: Optional[Callable] = None
+        if isinstance(self.observer, ModuleGradObserver):
+            # No forward/backward capture on unselected training steps.
+            self.observer.enabled = False
 
     def has_new_data(self) -> bool:
         """Returns True if the most recent step was observed and metrics were computed."""
@@ -406,31 +452,52 @@ class LiveTrainingMonitor:
 
     @contextmanager
     def observe(self, step: int):
-        """Context manager wrapping forward, loss, backward, and optimizer execution."""
+        """Capture an active training step and always restore model state.
+
+        FX mode temporarily substitutes the model forward with an FX
+        Interpreter; this is an explicit runtime intervention and may not
+        preserve custom Python forward side effects. Use mode="module"
+        to execute the original model.forward without replacement.
+        """
+        if self._closed:
+            raise RuntimeError("LiveTrainingMonitor has been closed")
+        if self._observing:
+            raise RuntimeError("LiveTrainingMonitor observation already active")
+
+        self._observing = True
         active = (step % self.log_interval == 0)
         self._new_data = False
-        if active:
-            self.observer.reset()
-            if self.mode == "trace":
-                self._orig_forward = self.model.forward
-                self.model.forward = lambda *args, **kwargs: self.observer.run(*args, **kwargs)
+        had_instance_forward = "forward" in self.model.__dict__
+        instance_forward = self.model.__dict__.get("forward")
+
         try:
+            self.observer.reset()
+            if isinstance(self.observer, ModuleGradObserver):
+                self.observer.enabled = active
+            if active and self.mode == "trace":
+                self.model.forward = lambda *args, **kwargs: self.observer.run(
+                    *args, **kwargs
+                )
+
             yield self
-        finally:
+
+            # Do not commit an incomplete telemetry snapshot when the
+            # caller's forward/backward/optimizer block raises.
             if active:
-                if self.mode == "trace" and self._orig_forward is not None:
-                    self.model.forward = self._orig_forward
-                    self._orig_forward = None
-
                 self.observer.capture_parameter_gradients()
-
-                if hasattr(self.observer, "extract_records") and self.mode == "trace":
+                if isinstance(self.observer, FXGradObserver):
                     node_recs, edge_recs = self.observer.extract_records()
                 else:
                     node_recs = self.observer.extract_records()
                     edge_recs = {}
 
-                traj_recs = [s.node_records for s in self.trajectory] + [node_recs]
+                previous = self.trajectory
+                if self.max_history_steps is not None:
+                    previous = (
+                        previous[-(self.max_history_steps - 1):]
+                        if self.max_history_steps > 1 else []
+                    )
+                traj_recs = [s.node_records for s in previous] + [node_recs]
                 dyn_eval = evaluate_dynamic_flow(
                     self.static_state,
                     node_recs,
@@ -439,7 +506,7 @@ class LiveTrainingMonitor:
                     trajectory=traj_recs,
                 )
 
-                self.latest_state = DynamicGraphState(
+                state = DynamicGraphState(
                     graph_state=self.static_state,
                     step=step,
                     node_records=node_recs,
@@ -447,6 +514,30 @@ class LiveTrainingMonitor:
                     static_evaluation=self.static_evaluation,
                     dynamic_evaluation=dyn_eval,
                 )
-                self.trajectory.append(self.latest_state)
+                self.latest_state = state
+                self.trajectory.append(state)
+                if self.max_history_steps is not None:
+                    del self.trajectory[:-self.max_history_steps]
                 self._new_data = True
+        finally:
+            if active and self.mode == "trace":
+                # Preserve the exact original instance attribute (or absence),
+                # not a new bound method stored in the instance dictionary.
+                if had_instance_forward:
+                    self.model.forward = instance_forward
+                else:
+                    self.model.__dict__.pop("forward", None)
+            if isinstance(self.observer, ModuleGradObserver):
+                self.observer.enabled = False
+            self._observing = False
 
+    def close(self) -> None:
+        """Detach persistent module hooks; idempotent and safe to repeat."""
+        if self._observing:
+            raise RuntimeError("Cannot close LiveTrainingMonitor while observing")
+        if self._closed:
+            return
+        if isinstance(self.observer, ModuleGradObserver):
+            self.observer.enabled = False
+            self.observer.remove_hooks()
+        self._closed = True
