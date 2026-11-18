@@ -5,7 +5,6 @@ import json
 import sys
 
 from .query import extract_benchmark_json, QueryEngine
-from .gui import launch_app, visualize
 
 
 def main() -> None:
