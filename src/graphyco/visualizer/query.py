@@ -644,49 +644,56 @@ def extract_benchmark_json(
 
     # Case D: PyTorch nn.Module or DynamicExecutionBridge
     if isinstance(target, nn.Module) or isinstance(target, DynamicExecutionBridge):
-        if isinstance(target, nn.Module):
+        created_bridge = isinstance(target, nn.Module)
+        if created_bridge:
             model = target
             bridge = DynamicExecutionBridge(model, mode="trace")
         else:
             bridge = target
             model = bridge.model
 
-        name = arch_name or model.__class__.__name__
+        try:
+            name = arch_name or model.__class__.__name__
 
-        if inputs is None:
-            # Try to infer input shape from model or default
-            inputs = torch.randn(8, 64)
+            if inputs is None:
+                # Try to infer input shape from model or default
+                inputs = torch.randn(8, 64)
 
-        # Execute multi-step trajectory
-        for _ in range(steps):
-            # Vary inputs slightly per step to model real dynamic progression
-            step_in = inputs + 0.05 * torch.randn_like(inputs)
-            bridge.step(inputs=step_in, loss_fn=loss_fn)
+            # Execute multi-step trajectory
+            for _ in range(steps):
+                # Vary inputs slightly per step to model real dynamic progression
+                step_in = inputs + 0.05 * torch.randn_like(inputs)
+                bridge.step(inputs=step_in, loss_fn=loss_fn)
 
-        latest = bridge.trajectory[-1]
-        static_eval = bridge.static_evaluation
-        dyn_eval = latest.dynamic_evaluation
+            latest = bridge.trajectory[-1]
+            static_eval = bridge.static_evaluation
+            dyn_eval = latest.dynamic_evaluation
 
-        summary = _build_summary(name, static_eval, dyn_eval, latest.node_records)
-        step_list = _build_step_list(bridge.trajectory)
-        ablation = compute_ablation_map(bridge.static_state)
+            summary = _build_summary(name, static_eval, dyn_eval, latest.node_records)
+            step_list = _build_step_list(bridge.trajectory)
+            ablation = compute_ablation_map(bridge.static_state)
 
-        benchmark_data["architectures"][name] = {
-            "summary": summary,
-            "static_graph": bridge.static_state.to_dict(),
-            "static_evaluation": static_eval,
-            "dynamic_evaluation": dyn_eval,
-            "nodes": {nid: rec.to_dict() for nid, rec in sorted(latest.node_records.items())},
-            "edges": {f"{k[0]}->{k[1]}": stats.to_dict() for k, stats in sorted(latest.edge_records.items())},
-            "attenuation": dyn_eval.get("attenuation", {}),
-        }
-        benchmark_data["step_trajectories"][name] = step_list
-        benchmark_data["ablation_validation"][name] = ablation
+            benchmark_data["architectures"][name] = {
+                "summary": summary,
+                "static_graph": bridge.static_state.to_dict(),
+                "static_evaluation": static_eval,
+                "dynamic_evaluation": dyn_eval,
+                "nodes": {nid: rec.to_dict() for nid, rec in sorted(latest.node_records.items())},
+                "edges": {f"{k[0]}->{k[1]}": stats.to_dict() for k, stats in sorted(latest.edge_records.items())},
+                "attenuation": dyn_eval.get("attenuation", {}),
+            }
+            benchmark_data["step_trajectories"][name] = step_list
+            benchmark_data["ablation_validation"][name] = ablation
 
-        if export_path:
-            with open(export_path, "w", encoding="utf-8") as f:
-                json.dump(benchmark_data, f, indent=2)
-        return benchmark_data
+            if export_path:
+                with open(export_path, "w", encoding="utf-8") as f:
+                    json.dump(benchmark_data, f, indent=2)
+            return benchmark_data
+        finally:
+            # Only release hooks for bridges allocated inside this helper.
+            # User-owned DynamicExecutionBridge objects stay usable.
+            if created_bridge:
+                bridge.close()
 
     raise TypeError(f"Cannot extract visualizer JSON from object of type {type(target)}")
 
