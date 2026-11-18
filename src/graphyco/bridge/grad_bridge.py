@@ -108,10 +108,11 @@ class DynamicGraphState:
 # ══════════════════════════════════════════════════════════════
 
 class DynamicExecutionBridge:
-    """Manages observational forward and backward graph execution.
+    """Executes instrumented forward/backward analysis and optional training.
 
-    Coordinates between PyTorch model evaluation, static graph extraction,
-    and dynamic runtime monitoring.
+    With no optimizer, parameter gradients are restored after telemetry
+    extraction, but forward buffers and RNG may still change. With an
+    optimizer, this method explicitly applies optimizer updates.
     """
 
     def __init__(
@@ -341,9 +342,13 @@ def monitor_model(
 # ══════════════════════════════════════════════════════════════
 
 class LiveTrainingMonitor:
-    """Non-intrusive live monitor for running PyTorch training loops.
+    """Live training monitor with explicit instrumentation tradeoffs.
 
-    Attaches directly to any custom training loop via context manager:
+    FX mode temporarily replaces model.forward with an interpreter; module
+    mode executes the original forward and uses output-tensor hooks.
+    Neither mode promises parity for arbitrary custom PyTorch models.
+
+    Attaches to training loops via context manager:
         monitor = LiveTrainingMonitor(model, log_interval=10)
 
         for step, (x, y) in enumerate(dataloader):
