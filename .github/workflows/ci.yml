@@ -115,7 +115,7 @@ jobs:
       - name: Install Qt system headless dependencies
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq xvfb libxcb-cursor0
+          sudo apt-get install -y -qq xvfb libxcb-cursor0 libegl1 libgl1 libopengl0 libxkbcommon-x11-0
       - name: Install CPU PyTorch for GUI smoke
         run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Install PySide6 GUI in isolated test job
