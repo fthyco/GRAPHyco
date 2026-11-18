@@ -25,7 +25,8 @@ pip install graphyco[gui]
 
 > **Full technical documentation**: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)  
 > **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.  
-> **Graph fidelity, hierarchy fallback, and provenance**: [docs/GRAPH_FIDELITY.md](docs/GRAPH_FIDELITY.md).
+> **Graph fidelity, hierarchy fallback, and provenance**: [docs/GRAPH_FIDELITY.md](docs/GRAPH_FIDELITY.md).  
+> **Gradient monitoring verification and limitations**: [docs/GRADIENT_MONITORING_VERIFICATION.md](docs/GRADIENT_MONITORING_VERIFICATION.md).
 
 ---
 
@@ -93,7 +94,7 @@ from graphyco import LiveTrainingMonitor
 model = nn.Sequential(nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 10))
 optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
 criterion = nn.CrossEntropyLoss()
-monitor = LiveTrainingMonitor(model, log_interval=5)
+monitor = LiveTrainingMonitor(model, mode="module", log_interval=5, max_history_steps=128)
 
 for step in range(100):
     x = torch.randn(8, 64)
@@ -107,7 +108,17 @@ for step in range(100):
     if monitor.has_new_data():
         info = monitor.get_latest_bottleneck()
         print(f"Step {step}: peak_grad_node={info['bottleneck_node']} G_max={info['max_concentration']:.2f}")
+
+monitor.close()  # release persistent module hooks
 ```
+
+With `mode="module"`, the original `model.forward` executes normally and
+per-module outputs are monitored. The default `mode="trace"` executes the
+FX Interpreter during observed steps, which may bypass custom Python forward
+side effects. Both modes were checked on paired CPU training tests, **not**
+proven equivalent for arbitrary models. Historical telemetry is bounded to
+the most recent 128 steps unless `max_history_steps=None` is specified.
+Always call `close()` in a `finally` block in long-running applications.
 
 ### 4. Health Diagnostics
 
@@ -135,6 +146,7 @@ print(f"Health Status    : {snapshot['health_status']}")
 print(f"Active Bottleneck: {snapshot['active_bottleneck_layer']} (G_max={snapshot['gmax']:.2f})")
 print(f"Avg Step Time    : {snapshot['avg_step_time_ms']:.2f} ms")
 print(f"Alerts           : {snapshot['alerts']}")
+diag.close()
 ```
 
 ### 5. Export & Query
