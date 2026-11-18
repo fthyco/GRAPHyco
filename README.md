@@ -8,7 +8,7 @@ Computational graph topology and dynamic gradient-flow monitoring for PyTorch.
 
 Graphyco extracts a formal computational graph from any PyTorch model and monitors gradient flow during training.
 
-- **Static topology** — Graph density, connectivity coherence, bottleneck ratio, perturbation resilience, and 7 structural invariants in deterministic fixed-point arithmetic.
+- **Static topology** — Directed edge-count density, degree-distribution uniformity, degree-concentration and structural-cost proxies, plus 7 structural invariants in deterministic fixed-point arithmetic.
 - **Dynamic gradient-flow** — Per-node activation/gradient RMS, edge attenuation, bottleneck concentration ($G_{\max}$), forward-backward alignment, temporal stability.
 - **Live diagnostics** — Context managers for training loops with automated vanishing/exploding gradient and dead neuron alerts.
 - **Export & query** — Serialize telemetry to JSON, compare architectures via `QueryEngine` or REST API.
@@ -23,7 +23,8 @@ pip install graphyco
 pip install graphyco[gui]
 ```
 
-> **Full technical documentation**: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)
+> **Full technical documentation**: [docs/DOCUMENTATION.md](docs/DOCUMENTATION.md)  
+> **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.
 
 ---
 
@@ -58,13 +59,27 @@ result = evaluate_model(model, mode="trace")  # or mode="module"
 
 ev = result["evaluation"]
 print(f"Nodes: {ev['node_count']}, Edges: {ev['edge_count']}")
-print(f"Bottleneck Ratio: {ev['topological_bottleneck_ratio'] / SCALE:.4f}")
-print(f"Resilience: {ev['structural_perturbation_resilience'] / SCALE:.4f}")
+print(f"Degree-Concentration Proxy: {ev['topological_bottleneck_ratio'] / SCALE:.4f}")
+print(f"Structural Cost Proxy: {ev['structural_perturbation_resilience'] / SCALE:.4f}")
 
 # Verify 7 structural invariants on module graph
 module_result = evaluate_model(model, mode="module")
 validate_invariants(module_result["graph_state"])
 ```
+
+### 2a. Exact Graph-Theoretic References (Optional)
+
+The historical topology summary metrics remain unchanged. For genuinely graph-theoretic shortest-path importance and reachability ablation, use separately named opt-in functions:
+
+```python
+from graphyco.core import directed_node_betweenness, pairwise_reachability_ablation_loss
+
+graph = result["graph_state"]
+betweenness = directed_node_betweenness(graph)
+ablation_loss = pairwise_reachability_ablation_loss(graph)
+```
+
+These are **structural** graph calculations only; they do not measure prediction loss or establish causal neuron importance. See [the mathematical contracts](docs/METRIC_CONTRACTS.md) for precise denominators and known limitations.
 
 ### 3. Live Training Monitoring
 
@@ -89,7 +104,7 @@ for step in range(100):
 
     if monitor.has_new_data():
         info = monitor.get_latest_bottleneck()
-        print(f"Step {step}: choke={info['bottleneck_node']} G_max={info['max_concentration']:.2f}")
+        print(f"Step {step}: peak_grad_node={info['bottleneck_node']} G_max={info['max_concentration']:.2f}")
 ```
 
 ### 4. Health Diagnostics
