@@ -7,15 +7,21 @@ from .core.evaluation import evaluate
 from .core.invariants import validate_invariants, InvariantViolationError
 from .bridge.torch_bridge import trace_to_graph, evaluate_model
 from .bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
-from .visualizer import visualize, extract_benchmark_json
+from .visualizer import visualize, extract_benchmark_json, launch_desktop_app
 from .visualizer.query import QueryEngine, query_metrics
 from .visualizer.diagnostics import LiveTrainingDiagnostics, GradientHealthStatus
 
-try:
-    from .visualizer.gui import VisualizerDesktopApp, launch_desktop_app
-except ImportError:
-    VisualizerDesktopApp = None  # type: ignore
-    launch_desktop_app = None  # type: ignore
+def __getattr__(name: str):
+    """Load the optional GUI class only when explicitly requested."""
+    if name == "VisualizerDesktopApp":
+        try:
+            from .visualizer import VisualizerDesktopApp
+            return VisualizerDesktopApp
+        except ImportError as exc:
+            if "graphyco[gui]" in str(exc):
+                return None
+            raise
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __version__ = "0.1.2"
 __name__ = "graphyco"
