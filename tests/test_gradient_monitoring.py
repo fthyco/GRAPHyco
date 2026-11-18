@@ -13,6 +13,10 @@ from torch import nn
 
 from graphyco.bridge.grad_bridge import DynamicExecutionBridge, LiveTrainingMonitor
 from graphyco.observer.grad_observer import FXGradObserver
+from graphyco.bridge.grad_bridge import monitor_model
+from graphyco.bridge.torch_bridge import evaluate_model_dynamic
+from graphyco.visualizer.query import extract_benchmark_json
+from graphyco.visualizer.diagnostics import LiveTrainingDiagnostics
 
 
 def fresh_model():
@@ -223,3 +227,148 @@ def test_tuple_output_hook_attaches_first_tensor_not_last():
     # fix is to retain component-specific gradients and the first canonical one.
     assert torch.equal(observer.raw_activation_grads["tuple"], torch.tensor([3.0]))
     assert torch.equal(observer.raw_output_component_grads[("tuple", 1)], torch.tensor([7.0]))
+
+
+class DoubleUse(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.linear = nn.Linear(4, 4)
+
+    def forward(self, x):
+        value = self.linear(x)
+        return torch.add(value, value)
+
+
+def test_repeated_fx_edge_gradient_contributions_are_summed():
+    model = DoubleUse()
+    bridge = DynamicExecutionBridge(model, mode="trace", record_edges=True)
+    state = bridge.step(torch.ones(2, 4))
+    assert state.graph_state.provenance["graph_kind"] == "fx_symbolic_trace"
+    assert ("linear", "add") in state.edge_records
+    edge_grad = state.edge_records[("linear", "add")]
+    # Both uses of the linear output contribute ones to the same FX
+    # source -> consumer edge, so its total gradient is two.
+    assert edge_grad.rms == pytest.approx(2.0)
+    assert edge_grad.numel == 8
+    assert sum(
+        (e.source, e.target) == ("linear", "add")
+        for e in state.graph_state.edges
+    ) == 1
+    bridge.close()
+
+
+@pytest.mark.parametrize("mode", ["trace", "module"])
+def test_dropout_rng_state_and_parameter_update_parity(mode):
+    torch.manual_seed(901)
+    base = nn.Sequential(
+        nn.Linear(4, 16), nn.ReLU(), nn.Dropout(p=0.3), nn.Linear(16, 2)
+    )
+    monitored = copy.deepcopy(base)
+    optimizer1 = torch.optim.SGD(base.parameters(), lr=0.01)
+    optimizer2 = torch.optim.SGD(monitored.parameters(), lr=0.01)
+    monitor = LiveTrainingMonitor(monitored, mode=mode)
+    x, y = batches()[0]
+    cpu_rng = torch.get_rng_state().clone()
+
+    torch.set_rng_state(cpu_rng.clone())
+    optimizer1.zero_grad(set_to_none=True)
+    plain_out = base(x)
+    plain_loss = torch.nn.functional.mse_loss(plain_out, y)
+    plain_loss.backward()
+    optimizer1.step()
+    plain_rng_after = torch.get_rng_state().clone()
+
+    torch.set_rng_state(cpu_rng.clone())
+    with monitor.observe(0):
+        optimizer2.zero_grad(set_to_none=True)
+        observed_out = monitored(x)
+        observed_loss = torch.nn.functional.mse_loss(observed_out, y)
+        observed_loss.backward()
+        optimizer2.step()
+    observed_rng_after = torch.get_rng_state().clone()
+
+    torch.testing.assert_close(plain_out, observed_out, rtol=1e-6, atol=1e-7)
+    torch.testing.assert_close(plain_loss, observed_loss, rtol=1e-6, atol=1e-7)
+    torch.testing.assert_close(plain_rng_after, observed_rng_after)
+    check_model_equal(base, monitored)
+    monitor.close()
+
+
+def test_history_step_bound_one_and_invalid_configuration():
+    model = fresh_model()
+    with pytest.raises(ValueError):
+        LiveTrainingMonitor(model, max_history_steps=0)
+    with pytest.raises(ValueError):
+        DynamicExecutionBridge(model, max_history_steps=0)
+
+    bridge = DynamicExecutionBridge(model, mode="trace", max_history_steps=1)
+    for _ in range(4):
+        bridge.step(batches()[0][0])
+    assert len(bridge.trajectory) == 1
+    assert bridge.trajectory[0].dynamic_evaluation["temporal"] is None
+    bridge.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        bridge.step(batches()[0][0])
+
+
+def test_one_shot_helpers_never_leave_persistent_module_hooks():
+    class Untraceable(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = nn.Linear(4, 4)
+
+        def forward(self, x):
+            if bool(x.sum() > 0):
+                return self.lin(x)
+            return -self.lin(x)
+
+    model = Untraceable()
+    x = torch.ones(2, 4)
+    assert not any(module._forward_hooks for module in model.modules())
+
+    monitor_model(model, inputs=x, mode="module")
+    assert not any(module._forward_hooks for module in model.modules())
+
+    evaluation = evaluate_model_dynamic(model, inputs=x, mode="trace")
+    assert evaluation["graph_provenance"]["trace_status"] == "failed"
+    assert not any(module._forward_hooks for module in model.modules())
+
+    extract_benchmark_json(model, inputs=x, steps=1)
+    assert not any(module._forward_hooks for module in model.modules())
+
+
+def test_diagnostics_native_training_parity_hooks_cleanup_and_exception():
+    baseline = fresh_model()
+    tracked = copy.deepcopy(baseline)
+    opt1 = torch.optim.Adam(baseline.parameters(), lr=0.004)
+    opt2 = torch.optim.Adam(tracked.parameters(), lr=0.004)
+    diagnostics = LiveTrainingDiagnostics(tracked, history_len=2)
+    assert not any(module._backward_hooks for module in tracked.modules())
+
+    for step, (x, y) in enumerate(batches()[:3]):
+        opt1.zero_grad(set_to_none=True)
+        loss1 = torch.nn.functional.mse_loss(baseline(x), y)
+        loss1.backward()
+        opt1.step()
+
+        with diagnostics.observe_step(step, loss=float(loss1)):
+            opt2.zero_grad(set_to_none=True)
+            loss2 = torch.nn.functional.mse_loss(tracked(x), y)
+            loss2.backward()
+            opt2.step()
+        check_model_equal(baseline, tracked)
+        check_optimizer_state_close(opt1, opt2)
+
+    snapshot = diagnostics.get_snapshot()
+    assert snapshot["step"] == 2
+    assert len(snapshot["loss_history"]) == 2
+
+    with pytest.raises(ValueError, match="failed"):
+        with diagnostics.observe_step(99):
+            tracked(batches()[0][0]).sum().backward()
+            raise ValueError("failed")
+    assert diagnostics.get_snapshot()["step"] == 2
+
+    diagnostics.close()
+    assert not any(module._forward_hooks for module in tracked.modules())
+    assert not any(module._backward_hooks for module in tracked.modules())
