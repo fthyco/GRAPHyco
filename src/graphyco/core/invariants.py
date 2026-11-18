@@ -59,6 +59,24 @@ def _check_port_connectivity(state: GraphState) -> None:
                     'without reciprocal out_port reference',
                 )
 
+
+    # In an FX dependency graph the edge list and reciprocal port tables
+    # describe exactly the same set of producer/consumer references.
+    # Module containment graphs intentionally carry no execution ports.
+    if state.provenance.get("edge_semantics") == "fx_dependencies":
+        edge_pairs = {(e.source, e.target) for e in state.edges}
+        port_pairs = {
+            (node.id, consumer_id)
+            for node in state.nodes.values()
+            for consumer_id in node.out_ports
+        }
+        if edge_pairs != port_pairs:
+            raise InvariantViolationError(
+                'port_connectivity',
+                'FX dependency edge pairs disagree with declared graph ports',
+            )
+
+
 def _check_node_uniqueness(state: GraphState) -> None:
     ids = list(state.nodes.keys())
     if len(ids) != len(set(ids)):
