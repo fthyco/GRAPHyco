@@ -1,0 +1,50 @@
+name: GRAPHyco package foundation
+
+on:
+  push:
+    branches: [main, audit/packaging-foundation]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-smoke:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install core package without optional GUI
+        run: python -m pip install -e ".[dev]"
+      - name: Verify PySide6 is absent
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('PySide6') is None"
+      - name: Run package regression tests
+        run: python -m pytest -q
+      - name: Build distributable wheel
+        run: python -m build --wheel --no-isolation
+      - name: Verify static assets inside wheel
+        run: |
+          python - <<'PY'
+          from glob import glob
+          from zipfile import ZipFile
+          files = glob("dist/*.whl")
+          assert len(files) == 1, files
+          with ZipFile(files[0]) as wheel:
+              names = set(wheel.namelist())
+          for name in ("visualizer.html", "visualizer.css", "visualizer.js"):
+              assert any(p.endswith("graphyco/visualizer/static/" + name) for p in names), name
+          print("Wheel contains required visualizer static assets")
+          PY
