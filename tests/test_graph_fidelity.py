@@ -12,7 +12,7 @@ from torch.fx import symbolic_trace
 
 from graphyco.bridge.torch_bridge import evaluate_model, module_to_graph, trace_to_graph
 from graphyco.bridge.grad_bridge import DynamicExecutionBridge, LiveTrainingMonitor
-from graphyco.core.invariants import validate_invariants
+from graphyco.core.invariants import validate_invariants, InvariantViolationError
 from graphyco.visualizer.query import extract_benchmark_json, get_canonical_models
 
 
@@ -101,6 +101,20 @@ def test_fx_keyword_dependency_ports_are_complete():
     incoming = {(e.source, e.target) for e in state.edges if e.target == add.id}
     assert incoming == {("left", add.id), ("right", add.id)}
     assert all(e.critical for e in state.edges)
+
+
+
+def test_port_connectivity_rejects_nonreciprocal_edge_reference():
+    state = trace_to_graph(KeywordDependencies())
+    assert "add" in state.nodes["left"].out_ports
+    state.nodes["left"].out_ports.remove("add")
+    with pytest.raises(InvariantViolationError, match="port_connectivity"):
+        validate_invariants(state)
+
+    state = trace_to_graph(KeywordDependencies())
+    state.nodes["add"].in_ports.append("ghost")
+    with pytest.raises(InvariantViolationError, match="port_connectivity"):
+        validate_invariants(state)
 
 
 def test_module_fallback_is_real_containment_not_registration_order():
