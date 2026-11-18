@@ -152,7 +152,7 @@ $$G_t = (V, E, X_t, A_t, G_t)$$
   - Node types include `placeholder` (inputs/targets), `call_module` (parametric layers like `nn.Linear`, `nn.Conv2d`), `call_function` (functional operations like `torch.relu`, `torch.cat`), `call_method` (tensor methods like `.view()`, `.flatten()`), and `output`.
 - **$E$ (Directed Dependency Edges):** Directed dataflow dependencies $e = (u, v)$ where tensor outputs of node $u$ are consumed by node $v$. Edges are classified into:
   - `operational`: Primary tensor dataflow dependencies necessary for computation.
-  - `informational`: Metadata or keyword arguments configuring operations.
+  - `informational`: An FX dependency supplied **only** through keyword arguments; this still represents an actual symbolic input dependency, not an assumed/nonexistent edge.
   - `critical`: Edges forming the core computation pipeline, strictly constrained to be acyclic.
 - **$X_t$ (Structural Invariants & Capacity):** Fixed-point graph invariants, capacity vectors (`CapacityVector`), structural debt, and domain constraints.
 - **$A_t$ (Forward Activation Telemetry):** Forward tensor statistics captured at each node during execution.
