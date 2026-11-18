@@ -351,7 +351,7 @@ def test_diagnostics_native_training_parity_hooks_cleanup_and_exception():
         loss1.backward()
         opt1.step()
 
-        with diagnostics.observe_step(step, loss=float(loss1)):
+        with diagnostics.observe_step(step, loss=float(loss1.detach())):
             opt2.zero_grad(set_to_none=True)
             loss2 = torch.nn.functional.mse_loss(tracked(x), y)
             loss2.backward()
