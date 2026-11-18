@@ -196,23 +196,23 @@ Graphyco is designed to observe gradient flow without altering forward numerical
 Graph topology is analyzed using deterministic combinatorial algorithms:
 - **Directed Adjacency:** Built in $O(|E|)$ time as an adjacency list mapping sources to targets.
 - **In/Out Degree Distributions:** Computes in-degree $d_{\text{in}}(v) = |\{u \in V \mid (u, v) \in E\}|$ and out-degree $d_{\text{out}}(v) = |\{w \in V \mid (v, w) \in E\}|$.
-- **Critical Cycle Detection:** Uses iterative 3-color Depth-First Search (`WHITE=0`, `GREY=1`, `BLACK=2`) with explicit recursion stacks to detect all directed cycles in $O(|V| + |E_{\text{critical}}|)$ time without recursion depth limits.
+- **Critical Cycle Detection:** Uses iterative 3-color Depth-First Search (`WHITE=0`, `GREY=1`, `BLACK=2`) to find back-edge cycle witnesses in the critical-edge subgraph. This is not an enumeration of all simple directed cycles.
 
 ---
 
 ## Static Topological Metrics
 
-All metrics are implemented in [`core/evaluation.py`](../src/graphyco/core/evaluation.py) and return scaled integer values ($\text{SCALE} = 10{,}000$).
+All legacy static metrics are implemented in [`core/evaluation.py`](../src/graphyco/core/evaluation.py) and return scaled integer values ($\text{SCALE} = 10{,}000$). They are structural descriptors and cost **proxies**, not causal explanations of learning. See [audited metric contracts](METRIC_CONTRACTS.md) for exact semantics, graph assumptions, and opt-in reference measurements.
 
 ### 1. Graph Density ($D$)
 
-Ratio of directed edges present to maximum possible directed edges:
+Raw directed edge-count ratio (it can exceed 1 for parallel edges or self-loops; no simple-graph guarantee):
 
 $$D = \left\lfloor \frac{|E| \cdot \text{SCALE}}{|V|(|V|-1)} \right\rfloor$$
 
 ### 2. Connectivity Coherence ($C$)
 
-Measures degree distribution uniformity across all nodes. With degree vector $\mathbf{d}$ and maximum variance $\text{MaxVar} = \frac{(N-1) \cdot \text{SCALE}^2}{N}$:
+Measures uniformity of **incident-edge shares** across nodes, not gradient-flow conservation. With $d_i=\lfloor \text{SCALE}\cdot(\#\text{edges incident to }i)/|E|\rfloor$ and maximum variance $\text{MaxVar} = \frac{(N-1) \cdot \text{SCALE}^2}{N}$:
 
 $$\bar{d} = \frac{1}{N}\sum_{i=1}^N d_i, \quad \sigma^2 = \frac{1}{N}\sum_{i=1}^N (d_i - \bar{d})^2$$
 
@@ -223,20 +223,20 @@ $$C = \text{SCALE} - \left\lfloor \frac{\sigma^2}{\text{MaxVar}} \cdot \text{SCA
 
 ### 3. Topological Bottleneck Ratio ($B$)
 
-Ratio of maximum node degree to mean node degree:
+Fixed-point ratio of the maximum **incident-edge share** to its integer mean; this is a degree-concentration proxy, **not betweenness centrality**:
 
 $$B = \left\lfloor \frac{\max_i(d_i) \cdot \text{SCALE}}{\bar{d}} \right\rfloor$$
 
 - $B = 10{,}000$ ($1.0$) corresponds to perfectly uniform connectivity.
-- $B > 1.5$ identifies structural choke nodes.
+- $B > 1.5$ is a heuristic concentration flag only; it does not establish an information bottleneck or a causal choke point.
 
 ### 4. Perturbation Profile & Structural Perturbation Resilience ($R$)
 
-Local cascade cost per node $i$:
+Local **heuristic** neighbor-cost score per node $i$ (not a simulated graph deletion or neural perturbation):
 
 $$\text{Cost}(i) = \underbrace{\max\left(1 + \left\lfloor \frac{d_i}{\text{SCALE}} \right\rfloor, 1\right)}_{\text{Primary}} + \underbrace{\sum_{j \in \mathcal{N}(i)} \max\left(\left\lfloor \frac{d_j}{\text{SCALE}} \right\rfloor, 1\right)}_{\text{Secondary}}$$
 
-Structural perturbation resilience across graph order $N = |V|$:
+Legacy inverse structural-cost proxy across graph order $N = |V|$ (not actual reachability retention):
 
 $$R = \left\lfloor \frac{N \cdot \text{SCALE}}{\sum_{i=1}^N \text{Cost}(i)} \right\rfloor$$
 
@@ -252,7 +252,7 @@ $$\text{dead\_ratio} = \left\lfloor \frac{|V_{\text{isolated}}| \cdot \text{SCAL
 
 ### 6. Critical Path Density
 
-Ratio of critical edges to total edges:
+Fraction of edges flagged as critical by the caller (not the number or length of graph-theoretic critical paths):
 
 $$\text{CPD} = \frac{|E_{\text{critical}}| \cdot \text{SCALE}}{|E|}$$
 
