@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from scipy.stats import pearsonr, spearmanr
 from typing import Callable, Tuple
-from bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
+from ..bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
 
 class QueryEngine:
     """Unified query engine for computational graph topology and dynamic flow metrics.
