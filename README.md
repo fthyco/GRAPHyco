@@ -10,9 +10,10 @@ FX mode extracts symbolic dependencies. Module fallback describes containment, n
 - [Technical documentation](docs/DOCUMENTATION.md) — architecture, API and metrics
 - [Verification](verification/README.md) — tested behavior, performance and limits
 - [CUDA status](verification/CUDA.md) — unverified GPU paths and required tests
+- [Changelog](CHANGELOG.md) — release notes and migration
 
 ## Status
 
-The audit changes are under review. CUDA AMP, GPU Inductor and multi-GPU NCCL are not certified.
+Version 0.2.0 includes CPU-validated audit changes. CUDA AMP, GPU Inductor, multi-GPU NCCL and production GPU performance remain unverified.
 
 License: MIT.
