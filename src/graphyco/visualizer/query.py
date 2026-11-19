@@ -711,17 +711,28 @@ def _build_summary(
     bneck = static_eval.get("topological_bottleneck_ratio", 0) / SCALE if isinstance(static_eval.get("topological_bottleneck_ratio"), int) else float(static_eval.get("topological_bottleneck_ratio", 0))
     resil = static_eval.get("structural_perturbation_resilience", 0) / SCALE if isinstance(static_eval.get("structural_perturbation_resilience"), int) else float(static_eval.get("structural_perturbation_resilience", 0))
 
+    missing_aware = (dyn_eval.get("policy") or {}).get("gradient_policy") == "observed_only"
     dyn_bneck = dyn_eval.get("bottleneck", {})
-    gmax = dyn_bneck.get("max_gradient_concentration", 1.0)
-    bnode = dyn_bneck.get("bottleneck_node", "-")
+    # Preserve the archived/legacy summary values when the new opt-in policy
+    # is absent. In research mode, do not turn undefined Gmax into 1.0.
+    gmax = (dyn_bneck.get("max_concentration") if missing_aware
+            else dyn_bneck.get("max_gradient_concentration", 1.0))
+    bnode = dyn_bneck.get("bottleneck_node", None if missing_aware else "-")
 
     align = dyn_eval.get("alignment", {})
-    rho_ag = align.get("spearman_rho", 0.0)
-    r_ag = align.get("pearson_r", 0.0)
+    rho_ag = align.get("spearman_rho", None if missing_aware else 0.0)
+    r_ag = align.get("pearson_r", None if missing_aware else 0.0)
 
     temporal = dyn_eval.get("temporal") or {}
-    cv_vals = [s.get("cv", 0.0) for s in temporal.values() if isinstance(s, dict)]
-    mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else 0.0
+    if missing_aware:
+        cv_vals = [
+            float(s["cv"]) for s in temporal.values()
+            if isinstance(s, dict) and s.get("cv") is not None
+        ]
+        mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else None
+    else:
+        cv_vals = [s.get("cv", 0.0) for s in temporal.values() if isinstance(s, dict)]
+        mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else 0.0
 
     cats = (dyn_eval.get("correspondence") or {}).get("node_categories") or {}
     type_counts = {"Type I": 0, "Type II": 0, "Type III": 0, "Type IV": 0}
@@ -730,7 +741,14 @@ def _build_summary(
             type_counts[c] += 1
 
     act_rms_list = [r.activation.rms for r in node_records.values() if r.activation]
-    grad_rms_list = [r.activation_gradient.rms for r in node_records.values() if r.activation_gradient]
+    if missing_aware:
+        measured = (dyn_eval.get("metric_populations") or {}).get("gradient", [])
+        grad_rms_list = [
+            node_records[nid].activation_gradient.rms for nid in measured
+            if nid in node_records and node_records[nid].activation_gradient is not None
+        ]
+    else:
+        grad_rms_list = [r.activation_gradient.rms for r in node_records.values() if r.activation_gradient]
 
     return {
         "name": name,
@@ -739,12 +757,15 @@ def _build_summary(
         "topological_bottleneck": round(bneck, 4),
         "resilience": round(resil, 4),
         "mean_act_flow": float(sum(act_rms_list) / max(1, len(act_rms_list))),
-        "mean_grad_flow": float(sum(grad_rms_list) / max(1, len(grad_rms_list))),
-        "grad_bottleneck_gmax": round(gmax, 4),
+        "mean_grad_flow": (
+            float(sum(grad_rms_list) / len(grad_rms_list))
+            if grad_rms_list else (None if missing_aware else 0.0)
+        ),
+        "grad_bottleneck_gmax": round(gmax, 4) if gmax is not None else None,
         "bottleneck_node": bnode,
-        "spearman_act_grad": round(rho_ag, 4),
-        "pearson_act_grad": round(r_ag, 4),
-        "mean_stability_cv": round(mean_cv, 4),
+        "spearman_act_grad": round(rho_ag, 4) if rho_ag is not None else None,
+        "pearson_act_grad": round(r_ag, 4) if r_ag is not None else None,
+        "mean_stability_cv": round(mean_cv, 4) if mean_cv is not None else None,
         "type_counts": type_counts,
     }
 
