@@ -61,7 +61,12 @@ def test_cpu_inductor_forward_backward_optimizer_and_monitor_parity():
             for left, right in zip(plain.parameters(), tracked.parameters()):
                 torch.testing.assert_close(left, right, atol=1e-6, rtol=1e-6)
             assert monitor.get_latest_state() is not None
-            assert monitor.get_latest_state().node_records
+            records = monitor.get_latest_state().node_records
+            # Fusion may bypass original leaf hooks; only the observed
+            # compiled-model output boundary is guaranteed by this contract.
+            assert "root" in records
+            assert records["root"].activation is not None
+            assert records["root"].activation_gradient is not None
     finally:
         monitor.close()
     assert not any(module._forward_hooks for module in tracked_compiled.modules())
