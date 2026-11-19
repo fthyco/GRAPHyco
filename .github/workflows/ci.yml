@@ -1,0 +1,128 @@
+name: GRAPHyco package foundation
+
+on:
+  push:
+    branches: [main, "audit/**"]
+  pull_request:
+    branches: [main, "audit/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core-smoke:
+    # Pin a runner with Python 3.9 toolcache for the advertised version matrix.
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install core package without optional GUI
+        run: python -m pip install -e ".[dev]"
+      - name: Verify PySide6 is absent
+        run: |
+          python -c "import importlib.util; assert importlib.util.find_spec('PySide6') is None"
+      - name: Run package regression tests
+        run: python -m pytest -q
+      - name: CPU monitor overhead probe (non-gating performance)
+        if: matrix.python-version == '3.11'
+        run: python benchmarks/monitor_overhead.py --steps 12 --warmup 4 --width 16 --json /tmp/graphyco-cpu-perf.json
+      - name: Build distributable wheel
+        run: python -m build --wheel --no-isolation
+      - name: Build distributable source archive
+        run: python -m build --sdist --no-isolation
+      - name: Verify source archive includes runtime assets
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+          files = glob.glob("dist/*.tar.gz")
+          assert len(files) == 1, files
+          with tarfile.open(files[0], "r:gz") as archive:
+              names = archive.getnames()
+          for asset in (
+              "pyproject.toml", "README.md",
+              "src/graphyco/visualizer/static/visualizer.html",
+              "src/graphyco/visualizer/static/visualizer.css",
+              "src/graphyco/visualizer/static/visualizer.js",
+          ):
+              assert any(name.endswith("/" + asset) for name in names), asset
+          print("sdist contains metadata, readme, and visualizer assets")
+          PY
+      - name: Verify static assets inside wheel
+        run: |
+          python - <<'PY'
+          from glob import glob
+          from zipfile import ZipFile
+          files = glob("dist/*.whl")
+          assert len(files) == 1, files
+          with ZipFile(files[0]) as wheel:
+              names = set(wheel.namelist())
+          for name in ("visualizer.html", "visualizer.css", "visualizer.js"):
+              assert any(p.endswith("graphyco/visualizer/static/" + name) for p in names), name
+          print("Wheel contains required visualizer static assets")
+          PY
+      - name: Install and exercise built wheel
+        run: |
+          python -m venv --system-site-packages /tmp/graphyco-wheel-venv
+          /tmp/graphyco-wheel-venv/bin/python -m pip install --no-deps --force-reinstall dist/*.whl
+          cd /tmp
+          /tmp/graphyco-wheel-venv/bin/python - <<'PY'
+          import graphyco
+          from graphyco.bridge.torch_bridge import trace_to_graph
+          from graphyco.core.primitives import GraphState
+          from graphyco.visualizer.renderer import Renderer
+          from torch import nn
+          assert isinstance(trace_to_graph(nn.Sequential(nn.Linear(2, 2))), GraphState)
+          assert 'id="embedded-data"' in Renderer().assemble({"architectures": {}})
+          assert "site-packages" in graphyco.__file__, graphyco.__file__
+          print("Built wheel import and core extraction successful")
+          PY
+      - name: Verify headless CLI from installed wheel
+        run: |
+          cd /tmp
+          /tmp/graphyco-wheel-venv/bin/graphyco --model resnet --steps 1 --query summary > /tmp/graphyco-wheel-cli.json
+          /tmp/graphyco-wheel-venv/bin/python -m json.tool /tmp/graphyco-wheel-cli.json >/dev/null
+      - name: Install and exercise source archive outside repository
+        run: |
+          python -m venv --system-site-packages /tmp/graphyco-sdist-venv
+          /tmp/graphyco-sdist-venv/bin/python -m pip install --no-deps --force-reinstall dist/*.tar.gz
+          cd /tmp
+          /tmp/graphyco-sdist-venv/bin/python - <<'PY'
+          import graphyco
+          from graphyco.visualizer.renderer import Renderer
+          assert "site-packages" in graphyco.__file__, graphyco.__file__
+          assert 'id="embedded-data"' in Renderer().assemble({"architectures": {}})
+          print("Built source archive install/import successful")
+          PY
+
+  gui-sandbox-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Qt system headless dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb libxcb-cursor0 libegl1 libgl1 libopengl0 libxkbcommon-x11-0
+      - name: Install CPU PyTorch for GUI smoke
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install PySide6 GUI in isolated test job
+        run: python -m pip install -e ".[gui,dev]"
+      - name: Test real QWebEngine sandbox and navigation policies
+        env:
+          QT_QPA_PLATFORM: offscreen
+          QTWEBENGINE_CHROMIUM_FLAGS: "--disable-gpu"
+        run: xvfb-run -a python -m pytest -q tests/test_qt_webengine_optional.py

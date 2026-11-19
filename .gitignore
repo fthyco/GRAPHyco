@@ -17,3 +17,7 @@ tests/
 # Demo / validation (not part of the distributed package)
 run_live_demo.py
 validation/
+
+# Notebook artifacts are not part of the repository
+*.ipynb
+notebooks/

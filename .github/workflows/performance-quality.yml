@@ -1,0 +1,77 @@
+name: Pre-merge performance and code quality
+
+on:
+  push:
+    branches: ["audit/performance-quality-gates"]
+  pull_request:
+    branches: ["audit/**", main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  code-quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install static-analysis tools
+        run: python -m pip install "ruff==0.14.6" "bandit==1.9.2"
+      - name: Syntax compile all package and tests
+        run: python -m compileall -q src tests benchmarks
+      - name: Ruff correctness and unused-name audit
+        run: ruff check --select E4,E7,E9,F src tests benchmarks
+      - name: Security severity high/medium audit
+        run: bandit -r src/graphyco -ll -ii
+
+  cpu-performance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install project and test dependencies
+        run: python -m pip install -e ".[dev]"
+      - name: Verify installed package dependencies
+        run: python -m pip check
+      - name: Long-run bounded telemetry and correctness gates
+        run: python -m pytest -q tests/test_performance_regression.py
+      - name: Actual CPU Inductor compile and training parity
+        run: python -m pytest -q tests/test_multirank_inductor_cpu.py
+      - name: Real two-process Gloo distributed training parity
+        run: python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=2 benchmarks/ddp_parity.py
+      - name: Calibrated CPU monitoring overhead and RSS
+        run: |
+          python benchmarks/perf_matrix.py --steps 45 --warmup 8 --output /tmp/graphyco-perf-matrix.json
+      - name: Architecture families (MLP / residual CNN / attention) parity
+        run: python -m pytest -q tests/test_model_family_perf.py
+      - name: Architecture-family CPU timing and peak RSS
+        run: python benchmarks/model_families.py --steps 12 --warmup 4 --output /tmp/graphyco-model-families.json
+      - name: Graph metric scalability / process RSS
+        run: python benchmarks/graph_scaling.py --output /tmp/graphyco-graph-scaling.json
+      - name: Publish performance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpu-performance-audit
+          path: |
+            /tmp/graphyco-perf-matrix.json
+            /tmp/graphyco-model-families.json
+            /tmp/graphyco-graph-scaling.json
+          if-no-files-found: warn
+
+# Physical CUDA validation is deliberately separate; GitHub hosted CPU jobs
+# must never report skipped CUDA tests as certified GPU compatibility.

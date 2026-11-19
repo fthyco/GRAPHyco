@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-from core.primitives import Edge, GraphState, SCALE, checked_mul
+from ..core.primitives import Edge, GraphState, SCALE
 from .grad_observer import DynamicNodeRecord, TensorStats
+
+if TYPE_CHECKING:
+    from .analysis_policy import AnalysisPolicy, NodeIdentityRegistry
 
 
 # ══════════════════════════════════════════════════════════════
@@ -544,8 +547,25 @@ def evaluate_dynamic_flow(
     edge_records: Optional[Dict[Tuple[str, str], TensorStats]] = None,
     static_perturbation_profile: Optional[Dict[str, int]] = None,
     trajectory: Optional[List[Dict[str, DynamicNodeRecord]]] = None,
+    analysis_policy: Optional["AnalysisPolicy"] = None,
+    identity_registry: Optional["NodeIdentityRegistry"] = None,
 ) -> Dict[str, Any]:
-    """Runs the complete suite of dynamic flow evaluations over a monitored execution."""
+    """Evaluate dynamic flow; explicit policies opt into provenance-aware semantics.
+
+    Without policy/registry this function retains the exact legacy result schema
+    and zero-filling semantics for historical reproducibility.
+    """
+    if analysis_policy is not None or identity_registry is not None:
+        from .analysis_policy import AnalysisPolicy, evaluate_with_policy
+        return evaluate_with_policy(
+            graph_state,
+            node_records,
+            policy=analysis_policy if analysis_policy is not None else AnalysisPolicy(),
+            identity_registry=identity_registry,
+            edge_records=edge_records,
+            static_perturbation_profile=static_perturbation_profile,
+            trajectory=trajectory,
+        )
     attenuation = compute_gradient_attenuation(graph_state.edges, node_records, edge_records)
     bottleneck = compute_gradient_bottleneck(node_records)
     alignment = compute_forward_backward_alignment(node_records)

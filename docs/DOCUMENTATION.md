@@ -34,9 +34,6 @@ Computational graph topology and dynamic gradient-flow monitoring for PyTorch ne
   - [`visualizer.diagnostics`](#visualizerdiagnosticspy)
   - [`visualizer.gui`](#visualizerguipy)
   - [`visualizer.renderer`](#visualizerrendererpy)
-- [Empirical Validation Results](#empirical-validation-results)
-  - [Static Validation Suite](#1-static-validation-suite)
-  - [Dynamic Flow Benchmark Suite](#2-dynamic-flow-benchmark-suite)
 
 ---
 
@@ -152,7 +149,7 @@ $$G_t = (V, E, X_t, A_t, G_t)$$
   - Node types include `placeholder` (inputs/targets), `call_module` (parametric layers like `nn.Linear`, `nn.Conv2d`), `call_function` (functional operations like `torch.relu`, `torch.cat`), `call_method` (tensor methods like `.view()`, `.flatten()`), and `output`.
 - **$E$ (Directed Dependency Edges):** Directed dataflow dependencies $e = (u, v)$ where tensor outputs of node $u$ are consumed by node $v$. Edges are classified into:
   - `operational`: Primary tensor dataflow dependencies necessary for computation.
-  - `informational`: Metadata or keyword arguments configuring operations.
+  - `informational`: An FX dependency supplied **only** through keyword arguments; this still represents an actual symbolic input dependency, not an assumed/nonexistent edge.
   - `critical`: Edges forming the core computation pipeline, strictly constrained to be acyclic.
 - **$X_t$ (Structural Invariants & Capacity):** Fixed-point graph invariants, capacity vectors (`CapacityVector`), structural debt, and domain constraints.
 - **$A_t$ (Forward Activation Telemetry):** Forward tensor statistics captured at each node during execution.
@@ -161,8 +158,15 @@ $$G_t = (V, E, X_t, A_t, G_t)$$
 #### Tracing Strategy & Fallback
 
 Graphyco implements a dual-strategy graph extraction mechanism:
-1. **PyTorch FX Symbolic Tracing (`trace_to_graph`):** Captures complete operator-level DAGs by tracing symbolic `Proxy` objects through the model's `forward` pass. Operational inputs (`args`) are mapped to critical dependencies, while keyword inputs (`kwargs`) are mapped to informational dependencies.
-2. **Recursive Module Inspection Fallback (`module_to_graph`):** When models contain dynamic Python control flow, data-dependent branches, or external C++ bindings that cannot be symbolically traced, Graphyco automatically falls back to inspecting the `nn.Module` hierarchy. Nodes represent individual layer modules, hierarchical parent-child relationships form operational edges, and sequential execution order forms critical path edges.
+1. **PyTorch FX Symbolic Tracing (`trace_to_graph`):** Captures symbolic operator dependencies by tracing PyTorch `Proxy` objects through the model's `forward` pass. Both positional and keyword inputs are actual FX dependencies and are marked `critical=True`; this is a symbolic graph, not a runtime-verified instance trace.
+2. **Recursive Module Inspection Fallback (`module_to_graph`):** When tracing fails or `mode="module"` is requested, nodes represent registered modules, and `contains` edges represent *only* real parent-child module membership. No sequential execution links are inferred from module registration order. Metadata labels the graph `module_hierarchy` and `execution_verified=False`.
+
+The graph's optional `provenance` field identifies whether edges are FX
+dependencies or mere registered-module containment. A failed FX attempt
+records a diagnostic `trace_status="failed"`; `strict_trace=True` disables
+fallback and raises the original exception. See
+[Graph Fidelity and Provenance](../verification/GRAPH_FIDELITY.md) for API and evidence
+limitations.
 
 ### 3. Seven Enforced Graph Invariants
 
@@ -172,15 +176,15 @@ Graphyco implements a dual-strategy graph extraction mechanism:
 |---|---|---|---|
 | **INV-1** | `node_id_format` | $\forall v \in V,\; v.\text{id} \in \text{Regex}(\mathtt{\text{^[a-zA-Z0-9\_-]+\$}})$ | Ensures node identifiers are sanitized and URL/serialization safe. |
 | **INV-2** | `edge_integrity` | $\forall (u, v) \in E,\; u \in V \land v \in V$ | Prohibits dangling edges pointing to or originating from non-existent nodes. |
-| **INV-3** | `port_connectivity` | $\forall v \in V, \forall p \in v.\text{out\_ports},\; \exists u \in V : p \in u.\text{in\_ports}$ | Enforces conservation of internal dataflow ports across connected modules. |
+| **INV-3** | `port_connectivity` | $\forall u,v\in V,\; v.id\in u.out\_ports \iff u.id\in v.in\_ports$ | Validates reciprocal FX producer/consumer references; does not assert tensor-gradient conservation. |
 | **INV-4** | `node_uniqueness` | $\|V\| = \|\text{set}(\{v.\text{id} \mid v \in V\})\|$ | Eliminates duplicate node registrations in the graph registry. |
 | **INV-5** | `graph_liveness` | $\exists v \in V : v.\text{active} = \text{True}$ | Rejects completely dormant or empty computational graphs. |
 | **INV-6** | `attributes_nonempty` | $\forall v \in V,\; |v.\text{attributes}| \ge 1$ | Requires every node to declare structural attributes (e.g. operator type, tensor shape, parameters). |
 | **INV-7** | `acyclic_critical_subgraph` | $\text{Cycles}(G_{\text{crit}}) = \emptyset$ where $G_{\text{crit}} = (V, \{e \in E \mid e.\text{critical}\})$ | Guarantees that the critical dependency subgraph is a strict DAG, preventing computational deadlocks. |
 
-### 4. Non-Intrusive Autograd Interception
+### 4. Runtime Autograd Instrumentation and Verification Limits
 
-Graphyco is designed to observe gradient flow without altering forward numerical outputs or modifying PyTorch autograd gradient values:
+Graphyco collects gradient telemetry with hooks and, in FX mode, extra identity-view autograd operations. Paired CPU tests support parity for covered deterministic models, **not arbitrary PyTorch programs**. See [monitor verification](../verification/GRADIENT_MONITORING_VERIFICATION.md):
 
 1. **Edge Gradient Interception (`EdgeAutogradHook`):**
    To measure directed edge gradient attenuation without breaking the PyTorch computational graph, an autograd function is placed along edge transitions:
@@ -188,31 +192,32 @@ Graphyco is designed to observe gradient flow without altering forward numerical
    - In the backward pass, incoming gradient $\frac{\partial L}{\partial y}$ is intercepted, its statistics are recorded in an external sink dictionary, and it is passed unchanged to $\frac{\partial L}{\partial x}$.
 2. **Detached Double-Precision Statistics (`TensorStats`):**
    All statistics (RMS, $L_1$, $L_2$, mean, std, sparsity) are computed on detached `float64` tensor copies (`t.detach().to(torch.float64)`). Non-finite values (`NaN`, `Inf`) are sanitized with `torch.nan_to_num` for reporting while triggering health alerts.
-3. **Zero Autograd Graph Pollution:**
-   All diagnostic hooks operate strictly out-of-place and are detached from the autograd graph, guaranteeing identical parameter updates whether monitoring is active or inactive.
+3. **Audited Runtime Equivalence (Restricted Scope):**
+   Stage 4 compares outputs, losses, parameter gradients, optimizer states and seeded dropout evolution on representative CPU networks (SGD and Adam, both FX and native module monitoring). The live FX mode still substitutes `model.forward` during observed steps and is **not proven equivalent** for stateful Python forwards, DDP, AMP, `torch.compile`, in-place/custom operators or arbitrary architectures.
+4. **Native Module Mode:** Module observation uses lightweight forward and output tensor gradient hooks without `register_full_backward_hook`. Multiple invocations of the same module retain the latest per-module sample rather than a complete invocation-indexed trace.
 
 ### 5. Degree Geometry & Topological Complexity
 
 Graph topology is analyzed using deterministic combinatorial algorithms:
 - **Directed Adjacency:** Built in $O(|E|)$ time as an adjacency list mapping sources to targets.
 - **In/Out Degree Distributions:** Computes in-degree $d_{\text{in}}(v) = |\{u \in V \mid (u, v) \in E\}|$ and out-degree $d_{\text{out}}(v) = |\{w \in V \mid (v, w) \in E\}|$.
-- **Critical Cycle Detection:** Uses iterative 3-color Depth-First Search (`WHITE=0`, `GREY=1`, `BLACK=2`) with explicit recursion stacks to detect all directed cycles in $O(|V| + |E_{\text{critical}}|)$ time without recursion depth limits.
+- **Critical Cycle Detection:** Uses iterative 3-color Depth-First Search (`WHITE=0`, `GREY=1`, `BLACK=2`) to find back-edge cycle witnesses in the critical-edge subgraph. This is not an enumeration of all simple directed cycles.
 
 ---
 
 ## Static Topological Metrics
 
-All metrics are implemented in [`core/evaluation.py`](../src/graphyco/core/evaluation.py) and return scaled integer values ($\text{SCALE} = 10{,}000$).
+All legacy static metrics are implemented in [`core/evaluation.py`](../src/graphyco/core/evaluation.py) and return scaled integer values ($\text{SCALE} = 10{,}000$). They are structural descriptors and cost **proxies**, not causal explanations of learning. See [audited metric contracts](METRIC_CONTRACTS.md) for exact semantics, graph assumptions, and opt-in reference measurements.
 
 ### 1. Graph Density ($D$)
 
-Ratio of directed edges present to maximum possible directed edges:
+Raw directed edge-count ratio (it can exceed 1 for parallel edges or self-loops; no simple-graph guarantee):
 
 $$D = \left\lfloor \frac{|E| \cdot \text{SCALE}}{|V|(|V|-1)} \right\rfloor$$
 
 ### 2. Connectivity Coherence ($C$)
 
-Measures degree distribution uniformity across all nodes. With degree vector $\mathbf{d}$ and maximum variance $\text{MaxVar} = \frac{(N-1) \cdot \text{SCALE}^2}{N}$:
+Measures uniformity of **incident-edge shares** across nodes, not gradient-flow conservation. With $d_i=\lfloor \text{SCALE}\cdot(\#\text{edges incident to }i)/|E|\rfloor$ and maximum variance $\text{MaxVar} = \frac{(N-1) \cdot \text{SCALE}^2}{N}$:
 
 $$\bar{d} = \frac{1}{N}\sum_{i=1}^N d_i, \quad \sigma^2 = \frac{1}{N}\sum_{i=1}^N (d_i - \bar{d})^2$$
 
@@ -223,20 +228,20 @@ $$C = \text{SCALE} - \left\lfloor \frac{\sigma^2}{\text{MaxVar}} \cdot \text{SCA
 
 ### 3. Topological Bottleneck Ratio ($B$)
 
-Ratio of maximum node degree to mean node degree:
+Fixed-point ratio of the maximum **incident-edge share** to its integer mean; this is a degree-concentration proxy, **not betweenness centrality**:
 
 $$B = \left\lfloor \frac{\max_i(d_i) \cdot \text{SCALE}}{\bar{d}} \right\rfloor$$
 
 - $B = 10{,}000$ ($1.0$) corresponds to perfectly uniform connectivity.
-- $B > 1.5$ identifies structural choke nodes.
+- $B > 1.5$ is a heuristic concentration flag only; it does not establish an information bottleneck or a causal choke point.
 
 ### 4. Perturbation Profile & Structural Perturbation Resilience ($R$)
 
-Local cascade cost per node $i$:
+Local **heuristic** neighbor-cost score per node $i$ (not a simulated graph deletion or neural perturbation):
 
 $$\text{Cost}(i) = \underbrace{\max\left(1 + \left\lfloor \frac{d_i}{\text{SCALE}} \right\rfloor, 1\right)}_{\text{Primary}} + \underbrace{\sum_{j \in \mathcal{N}(i)} \max\left(\left\lfloor \frac{d_j}{\text{SCALE}} \right\rfloor, 1\right)}_{\text{Secondary}}$$
 
-Structural perturbation resilience across graph order $N = |V|$:
+Legacy inverse structural-cost proxy across graph order $N = |V|$ (not actual reachability retention):
 
 $$R = \left\lfloor \frac{N \cdot \text{SCALE}}{\sum_{i=1}^N \text{Cost}(i)} \right\rfloor$$
 
@@ -252,7 +257,7 @@ $$\text{dead\_ratio} = \left\lfloor \frac{|V_{\text{isolated}}| \cdot \text{SCAL
 
 ### 6. Critical Path Density
 
-Ratio of critical edges to total edges:
+Fraction of edges flagged as critical by the caller (not the number or length of graph-theoretic critical paths):
 
 $$\text{CPD} = \frac{|E_{\text{critical}}| \cdot \text{SCALE}}{|E|}$$
 
@@ -548,11 +553,11 @@ PyTorch FX tracing and module-level graph extraction.
 ```python
 module_to_graph(
     model: nn.Module,
-    include_containers: bool = False,
+    include_containers: bool = True,
     min_params: int = 0
 ) -> GraphState
 ```
-Recursive `nn.Module` inspection fallback. Creates nodes for leaf modules, links parent→child hierarchical edges (operational, non-critical) and sequential sibling edges (operational, critical). Use when FX tracing is unsupported (dynamic control flow, RNNs, C++ bindings).
+Recursive `nn.Module` inspection. Default includes root/containers, and emits only direct `contains` parent→child edges (`critical=False`). Does **not** invent sibling order or tensor dataflow. With `include_containers=False`, returns leaf nodes without speculative edges. This deliberately changes the old module-mode topology numbers; consult [graph fidelity notes](../verification/GRAPH_FIDELITY.md).
 
 ```python
 trace_to_graph(
@@ -560,18 +565,20 @@ trace_to_graph(
     concrete_args: Optional[Dict] = None
 ) -> GraphState
 ```
-Uses `torch.fx.symbolic_trace` to translate the FX IR into `GraphState`. Maps `args` to operational critical edges and `kwargs` to informational non-critical edges. Handles `call_module`, `call_function`, `call_method`, `placeholder`, and `output` opcodes.
+Uses `torch.fx.symbolic_trace` to translate the FX IR into `GraphState`. Every `all_input_nodes` dependency is represented once; positional references are `operational` and keyword-only references `informational`, both `critical=True`. Each node has reciprocal producer/consumer port references. `provenance` records that the graph is symbolic, not runtime-verified.
 
 ```python
 evaluate_model(
     model: nn.Module,
     mode: str = 'trace',
-    concrete_args: Optional[Dict] = None
+    concrete_args: Optional[Dict] = None,
+    strict_trace: bool = False
 ) -> Dict
 ```
 Static model profiling. Returns:
 - `graph_state`: The extracted `GraphState`
-- `evaluation`: All static topological metrics
+- `graph_provenance`: Graph source, edge semantics and any fallback diagnostics
+- `evaluation`: All static topological metrics (interpretable only for the reported graph type)
 - `model_info`: `{total_parameters, trainable_parameters, layer_types}`
 
 | `mode` | Strategy | When to Use |
@@ -585,10 +592,11 @@ evaluate_model_dynamic(
     inputs: torch.Tensor,
     loss_fn: Optional[Callable] = None,
     mode: str = "trace",
-    concrete_args: Optional[Dict] = None
+    concrete_args: Optional[Dict] = None,
+    strict_trace: bool = False
 ) -> Dict[str, Any]
 ```
-Combined static + dynamic evaluation via `DynamicExecutionBridge`.
+Combined static + dynamic evaluation via `DynamicExecutionBridge`. Returns `graph_provenance` in addition to prior keys. With `strict_trace=True`, raises on FX trace failure instead of silently using module containment.
 
 ---
 
@@ -627,14 +635,17 @@ DynamicExecutionBridge(
     model: nn.Module,
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
-    record_edges: bool = True
+    record_edges: bool = True,
+    strict_trace: bool = False,
+    max_history_steps: Optional[int] = 128
 )
 ```
 
 | Method | Description |
 |---|---|
 | `step(inputs, target, loss_fn, optimizer) -> DynamicGraphState` | Execute one forward-backward pass, compute all metrics, optionally update parameters |
-| `run_training_trajectory(dataloader, loss_fn, optimizer, steps) -> List[DynamicGraphState]` | Multi-step recording across batch sequences |
+| `run_training_trajectory(dataloader, loss_fn, optimizer, steps) -> List[DynamicGraphState]` | Recent-window trajectory (max `max_history_steps` full states by default) |
+| `close()` | Remove hooks and close the bridge; idempotent |
 
 The `step()` method executes this pipeline:
 1. Forward pass → record node activations
@@ -643,13 +654,13 @@ The `step()` method executes this pipeline:
 4. Capture module parameter gradients
 5. Extract `DynamicNodeRecord` and `TensorStats`
 6. Run `evaluate_dynamic_flow(...)` for all dynamic metrics
-7. Optional `optimizer.step()`
+7. Optional `optimizer.step()`. Without an optimizer, existing parameter `.grad` values are restored after the diagnostic backward; model buffers, RNG and Python forward side effects may still change.
 
 ---
 
 **`LiveTrainingMonitor`**
 
-Non-intrusive context manager for active training loops.
+Instrumented context manager for active training loops. With `mode="module"`, the original model forward is executed; FX mode temporarily substitutes it with the symbolic interpreter. Both are verified only on the tested CPU models.
 
 ```python
 LiveTrainingMonitor(
@@ -657,7 +668,9 @@ LiveTrainingMonitor(
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
     log_interval: int = 1,
-    record_edges: bool = True
+    record_edges: bool = True,
+    strict_trace: bool = False,
+    max_history_steps: Optional[int] = 128
 )
 ```
 
@@ -669,7 +682,8 @@ LiveTrainingMonitor(
 | `get_latest_bottleneck()` | `Dict[str, Any]` | `{bottleneck_node, max_concentration}` |
 | `get_live_anomalies()` | `Dict[str, Any]` | Vanishing and exploding node lists |
 | `get_temporal_stability()` | `Dict[str, Any]` | Per-node CV and classification |
-| `export_live_json(path, indent)` | `None` | Export current state to JSON file |
+| `export_live_json(path, indent)` | `None` | Export the **retained window** to JSON |
+| `close()` | `None` | Detach persistent module hooks and prevent future observations |
 
 #### Functions
 
@@ -966,105 +980,4 @@ Templating replaces `<!-- INLINE_CSS_PLACEHOLDER -->`, `<!-- INLINE_JS_PLACEHOLD
 
 ---
 
-## Empirical Validation Results
-
-### 1. Static Validation Suite
-
-Six controlled empirical protocols executed across canonical architecture families:
-
-#### Protocol 1: Architectural Discriminability
-
-| Architecture | Nodes ($\|V\|$) | Edges ($\|E\|$) | Density ($D$) | Coherence ($C$) | Bottleneck ($B$) | Resilience ($R$) |
-|---|---|---|---|---|---|---|
-| Sequential MLP | 9 | 8 | 0.1111 | 0.9970 | 1.1251 | 0.3600 |
-| Feedforward CNN | 9 | 8 | 0.1111 | 0.9970 | 1.1251 | 0.3600 |
-| ResNet Block | 8 | 9 | 0.1607 | 0.9956 | 1.5000 | 0.3333 |
-| DenseNet Block | 12 | 17 | 0.1287 | 0.9951 | 1.7653 | 0.2608 |
-| U-Net Toy | 14 | 14 | 0.0769 | 0.9985 | 1.5000 | 0.3333 |
-| Self-Attention Toy | 10 | 12 | 0.1333 | 0.9951 | 1.6673 | 0.2941 |
-
-Sequential MLP and CNN produce identical topological metrics due to identical sequential dependency structures. DenseNet exhibits maximum connectivity dispersion ($B=1.7653$), while Self-Attention exhibits high concentration ($B=1.6673$).
-
-#### Protocol 2: Controlled Synthetic Confounder Isolation
-
-Fixed-size graphs with identical order $|V|=10$ and size $|E|=9$:
-
-| Topology | Density | Coherence | Bottleneck | Resilience |
-|---|---|---|---|---|
-| Linear Chain | 0.1000 | 0.9979 | 1.1115 | 0.3571 |
-| Star (Single Hub) | 0.1000 | 0.9210 | 5.0025 | 0.3448 |
-| Binary Tree | 0.1000 | 0.9896 | 1.6673 | 0.3571 |
-| Bottleneck Funnel | 0.1000 | 0.9814 | 2.2231 | 0.3571 |
-
-Under identical $|V|$ and $|E|$, the Star topology yields maximum bottleneck ($5.0025$) and lowest coherence ($0.9210$), proving metrics measure connectivity geometry rather than counts.
-
-#### Protocol 3: Width-Scale Invariance
-
-| Configuration | Parameters | $\|V\|$ | $\|E\|$ | $B$ | $C$ |
-|---|---|---|---|---|---|
-| MLP width=64 | 13,130 | 9 | 8 | 1.1251 | 0.9970 |
-| MLP width=512 | 793,098 | 9 | 8 | 1.1251 | 0.9970 |
-
-A $\sim 60\times$ increase in parameter volume yields bit-for-bit identical topological metrics, proving complete decoupling of topology from parameter scale.
-
-#### Protocol 4: Metric Correlation & Non-Collinearity
-
-| | Density | Coherence | Bottleneck | Resilience |
-|---|---|---|---|---|
-| **Density** | $1.000$ | $-0.936$ | $0.328$ | $-0.389$ |
-| **Coherence** | $-0.936$ | $1.000$ | $-0.559$ | $0.666$ |
-| **Bottleneck** | $0.328$ | $-0.559$ | $1.000$ | $-0.928$ |
-| **Resilience** | $-0.389$ | $0.666$ | $-0.928$ | $1.000$ |
-
-#### Protocol 5: Perturbation Predictive Validity
-
-| Architecture | Spearman $\rho$ | $p$-value | Pearson $r$ | $p$-value |
-|---|---|---|---|---|
-| ResNet Block | 0.7555 | 0.0495 | 0.7783 | 0.0392 |
-| U-Net Toy | 0.4513 | 0.1216 | 0.3284 | 0.2732 |
-
-#### Protocol 6: Asymptotic Order Scaling ($N \in \{10, 25, 50, 100\}$)
-
-- **Linear Chain:** $B \to 1.0$ asymptotically ($1.1115 \to 1.0150$).
-- **Star Graph:** $B$ scales linearly with $N/2$ ($5.0025 \to 50.2512$).
-
----
-
-### 2. Dynamic Flow Benchmark Suite
-
-Seven dynamic empirical protocols across canonical models:
-
-#### Architecture-Level Dynamic Summary
-
-| Architecture | Density | Coherence | Bottleneck | Resilience | Act RMS | Grad RMS | $G_{\max}$ | $\rho(A,G)$ | Mean CV |
-|---|---|---|---|---|---|---|---|---|---|
-| Sequential MLP | 0.1111 | 0.9970 | 1.1251 | 0.3600 | 0.3011 | 0.0036 | 3.5114 | $-1.0000$ | 0.0409 |
-| ResNet Block | 0.1428 | 0.9956 | 1.5000 | 0.3333 | 0.6126 | 0.0045 | 2.8582 | $-0.2182$ | 0.0243 |
-| DenseBlock | 0.1287 | 0.9951 | 1.7653 | 0.2608 | 0.5014 | 0.0034 | 3.6713 | $-0.3825$ | 0.0220 |
-| U-Net Toy | 0.0769 | 0.9985 | 1.5000 | 0.3333 | 0.2512 | 0.0031 | 4.0313 | $-0.6784$ | 0.0534 |
-| Self-Attention | 0.1333 | 0.9951 | 1.6673 | 0.2941 | 0.5895 | 0.0039 | 3.2122 | $+0.2997$ | 0.0365 |
-
-#### Research Findings (Q1–Q5)
-
-**Q1 — Structural vs. Functional Importance:**
-Across 53 nodes, Spearman $\rho = -0.0583$ ($p = 0.678$) between static structural centrality and dynamic gradient magnitude. High structural connectivity does not guarantee high gradient flux. Type II (high topology, low gradient) and Type III (low topology, high gradient) nodes confirm structural-functional divergence.
-
-**Q2 — Structural vs. Gradient Bottleneck:**
-Static topological bottleneck $B$ identifies structural routing choke points (skip merges), while dynamic $G_{\max}$ identifies computational signal concentration points (final projections, output layers).
-
-**Q3 — Gradient Attenuation Across Paths:**
-In ResNet Block, the residual shortcut (`x → add`) exhibits backward ratio $0.9652$ (log ratio $-0.0354$, minimal attenuation). The sequential convolutional path (`x → l1 → r1 → l2 → add`) experiences substantial gradient attenuation ($\Delta = 0.38 \to 1.76$).
-
-**Q4 — Forward-Backward Alignment:**
-Activation scale is an unreliable proxy for gradient flux:
-
-| Architecture | $\rho(A, G)$ |
-|---|---|
-| Sequential MLP | $-1.0000$ |
-| U-Net Toy | $-0.6784$ |
-| DenseBlock | $-0.3825$ |
-| ResNet Block | $-0.2182$ |
-| Self-Attention | $+0.2997$ |
-
-**Q5 — Static Perturbation vs. Dynamic Stability:**
-Static perturbation resilience correlates positively with reachability retention under ablation ($\rho = 0.1699$), verifying that topological fragility scores predict structural disconnection under node removal.
+Historical empirical tables: [Verification archive](../verification/HISTORICAL_EMPIRICAL_RESULTS.md).

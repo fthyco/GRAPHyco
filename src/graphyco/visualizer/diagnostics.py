@@ -4,13 +4,11 @@ from contextlib import contextmanager
 import math
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
 
-from bridge.grad_bridge import DynamicGraphState, LiveTrainingMonitor
-from observer.grad_observer import compute_tensor_stats, TensorStats
 
 
 class GradientHealthStatus:
@@ -46,6 +44,8 @@ class LiveTrainingDiagnostics:
         self.vanishing_threshold = vanishing_threshold
         self.exploding_threshold = exploding_threshold
         self.dead_neuron_threshold = dead_neuron_threshold
+        if history_len < 1:
+            raise ValueError("history_len must be >= 1")
         self.history_len = history_len
 
         self._lock = threading.Lock()
@@ -67,29 +67,36 @@ class LiveTrainingDiagnostics:
         self._setup_hooks()
 
     def _setup_hooks(self) -> None:
-        """Attaches lightweight forward and backward hooks to all named modules."""
+        """Use forward and output-tensor hooks without full backward wrappers."""
         for name, module in self.model.named_modules():
-            if len(list(module.children())) > 0:
+            if any(module.children()):
                 continue
 
             def forward_hook(mod, inp, out, mod_name=name):
-                if isinstance(out, torch.Tensor):
-                    with torch.no_grad():
-                        flat = out.detach().view(-1)
-                        if flat.numel() > 0:
-                            zeros = (flat == 0).float().mean().item()
-                            self._current_step_acts[mod_name] = flat
-                            self._dead_neuron_ratios[mod_name] = zeros
+                tensor = out if isinstance(out, torch.Tensor) else None
+                if tensor is None and isinstance(out, (tuple, list)):
+                    tensor = next(
+                        (item for item in out if isinstance(item, torch.Tensor)),
+                        None,
+                    )
+                if tensor is None:
+                    return
 
-            def backward_hook(mod, grad_in, grad_out, mod_name=name):
-                if grad_out and len(grad_out) > 0 and isinstance(grad_out[0], torch.Tensor):
-                    with torch.no_grad():
-                        g = grad_out[0].detach()
-                        self._current_step_grads[mod_name] = g
+                with torch.no_grad():
+                    flat = tensor.detach().reshape(-1)
+                    if flat.numel():
+                        self._current_step_acts[mod_name] = flat
+                        self._dead_neuron_ratios[mod_name] = (
+                            (flat == 0).float().mean().item()
+                        )
 
-            h_fwd = module.register_forward_hook(forward_hook)
-            h_bwd = module.register_full_backward_hook(backward_hook)
-            self._hook_handles.extend([h_fwd, h_bwd])
+                if tensor.requires_grad:
+                    def backward_tensor_hook(grad):
+                        if grad is not None:
+                            self._current_step_grads[mod_name] = grad.detach()
+                    tensor.register_hook(backward_tensor_hook)
+
+            self._hook_handles.append(module.register_forward_hook(forward_hook))
 
     def close(self) -> None:
         """Removes all registered hooks."""
@@ -101,7 +108,8 @@ class LiveTrainingDiagnostics:
         self._hook_handles.clear()
 
     def __del__(self):
-        self.close()
+        if hasattr(self, "_hook_handles"):
+            self.close()
 
     @contextmanager
     def observe_step(self, step: int, loss: Optional[float] = None):
@@ -110,7 +118,13 @@ class LiveTrainingDiagnostics:
         self.current_loss = loss
         try:
             yield self
-        finally:
+        except BaseException:
+            # A failed caller step must not be reported as a completed
+            # training/gradient observation.
+            self._current_step_grads.clear()
+            self._current_step_acts.clear()
+            raise
+        else:
             dt = time.time() - t0
             self._process_step(step, loss=self.current_loss, duration=dt)
 

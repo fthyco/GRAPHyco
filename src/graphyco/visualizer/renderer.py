@@ -9,8 +9,20 @@ Handles two modes:
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Any, Dict, Optional, Union
+
+
+def _json_safe(value: Any) -> Any:
+    """Map nonfinite telemetry floats to JSON null rather than invalid NaN tokens."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 class Renderer:
@@ -73,14 +85,25 @@ class Renderer:
         )
         html = html.replace('<script src="visualizer.js"></script>\n', "")
 
-        # Inject data into the embedded-data tag
-        if data is not None:
-            if isinstance(data, dict):
-                data_json = json.dumps(data)
-            else:
-                data_json = str(data)
-        else:
+        # The embedding is inside a <script type="application/json"> tag.
+        # A JSON string containing </script> still terminates that HTML
+        # element even though it would be valid JSON. Escaping raw HTML
+        # delimiters prevents data from becoming executable markup.
+        if data is None:
             data_json = ""
+        else:
+            if isinstance(data, str):
+                data = json.loads(data)
+            if not isinstance(data, dict):
+                raise TypeError("Embedded benchmark data must be a JSON object")
+            data_json = json.dumps(
+                _json_safe(data), ensure_ascii=True, allow_nan=False
+            )
+            data_json = (
+                data_json.replace("<", "\\u003c")
+                .replace(">", "\\u003e")
+                .replace("&", "\\u0026")
+            )
 
         html = html.replace("<!-- DATA_PLACEHOLDER -->", data_json)
 

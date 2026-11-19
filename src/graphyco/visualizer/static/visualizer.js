@@ -81,22 +81,30 @@ function setupApp() {
   }
   currentArch = sel.value;
 
-  if (params.get('view')) {
-    currentView = params.get('view');
-    document.querySelectorAll('#view-buttons button').forEach(b => b.classList.remove('active'));
-    const vb = document.querySelector(`#view-buttons button[data-view="${currentView}"]`);
-    if (vb) vb.classList.add('active');
+  const requestedView = params.get('view');
+  if (requestedView === 'neuron' || requestedView === 'layer') {
+    currentView = requestedView;
+    document.querySelectorAll('#view-buttons button').forEach(b => {
+      b.classList.toggle('active', b.dataset.view === currentView);
+    });
   }
-  if (params.get('mode')) {
-    currentMode = params.get('mode');
-    document.querySelectorAll('#mode-buttons button').forEach(b => b.classList.remove('active'));
-    const mb = document.querySelector(`#mode-buttons button[data-mode="${currentMode}"]`);
-    if (mb) mb.classList.add('active');
+  const requestedMode = params.get('mode');
+  const validModes = new Set([
+    'gradient', 'activation', 'sensitivity', 'type', 'topology', 'stability'
+  ]);
+  if (validModes.has(requestedMode)) {
+    currentMode = requestedMode;
+    document.querySelectorAll('#mode-buttons button').forEach(b => {
+      b.classList.toggle('active', b.dataset.mode === currentMode);
+    });
   }
   if (params.get('step')) {
-    currentStep = parseInt(params.get('step'));
-    const sld = document.getElementById('step-slider');
-    if (sld) sld.value = currentStep;
+    const requestedStep = Number(params.get('step'));
+    if (Number.isSafeInteger(requestedStep) && requestedStep >= 1) {
+      currentStep = requestedStep;
+      const sld = document.getElementById('step-slider');
+      if (sld) sld.value = currentStep;
+    }
   }
 
   sel.onchange = () => {
@@ -1157,7 +1165,7 @@ function updateInspector(nid, neuronIdx = null) {
     : '—';
 
   const tStat = (dynEv.temporal && dynEv.temporal[nid]) ? dynEv.temporal[nid] : null;
-  document.getElementById('ins-cv').textContent = tStat ? `${tStat.cv.toFixed(4)} (${tStat.classification})` : '-';
+  document.getElementById('ins-cv').textContent = !tStat ? '-' : (tStat.cv !== null && tStat.cv !== undefined && Number.isFinite(tStat.cv) ? `${Number(tStat.cv).toFixed(4)} (${tStat.classification})` : `N/A (${tStat.classification || 'not_observed'})`);
 
   // Highlight selected element
   document.querySelectorAll('.node-group').forEach(ng => {

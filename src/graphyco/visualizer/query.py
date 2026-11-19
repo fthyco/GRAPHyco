@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import json
 import os
-import sys
 from typing import Any, Dict, List, Optional, Union
 
 
 import torch
 import torch.nn as nn
-from scipy.stats import pearsonr, spearmanr
 from typing import Callable, Tuple
-from bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
+from ..bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
+from ..core.metric_contracts import QUERY_METRIC_DEFINITIONS
 
 class QueryEngine:
     """Unified query engine for computational graph topology and dynamic flow metrics.
@@ -157,16 +156,7 @@ class QueryEngine:
                 "Install it with: pip install graphyco[query]"
             ) from None
 
-        metric_definitions = [
-            ("density", "Graph Density (D)", "Edge connectivity ratio |E| / (|V|(|V|-1))"),
-            ("coherence", "Flow Coherence (C)", "Conservation of incoming vs outgoing gradient flow"),
-            ("topological_bottleneck", "Topological Bottleneck", "Peak node betweenness centrality in DAG"),
-            ("resilience", "Structural Resilience (R)", "Path connectivity retention under single-node ablation"),
-            ("grad_bottleneck_gmax", "Dynamic Bottleneck (G_max)", "Peak gradient concentration factor relative to mean"),
-            ("bottleneck_node", "Bottleneck Node", "Layer exhibiting maximal gradient concentration"),
-            ("spearman_act_grad", "Spearman Rank (rho_AG)", "Rank correlation between forward activations and gradients"),
-            ("mean_stability_cv", "Mean Stability (CV)", "Coefficient of variation across recorded steps"),
-        ]
+        metric_definitions = QUERY_METRIC_DEFINITIONS
 
         if siblings or (arch is not None and str(arch).lower() in ("all", "siblings")):
             archs = self.list_architectures()
@@ -195,7 +185,7 @@ class QueryEngine:
             rows.append(item)
 
         df = pd.DataFrame(rows)
-        df.set_index("Metric", inplace=True)
+        df = df.set_index("Metric")
         return df
 
     def get_siblings(self, node_id: str, arch: Optional[str] = None) -> List[str]:
@@ -549,28 +539,9 @@ def compute_ablation_map(graph_state) -> Dict[str, float]:
 
 
 def get_canonical_models() -> Dict[str, Tuple[nn.Module, torch.Tensor]]:
-    """Returns the 5 canonical benchmark architectures with default inputs."""
-    try:
-        from validate_framework import DenseBlock, MLP, ResNetBlock, SelfAttentionToy, UNetToy
-    except ImportError:
-        pkg_dir = os.path.dirname(os.path.abspath(__file__))
-        cands = [
-            os.path.join(os.getcwd(), "validation"),
-            os.path.abspath(os.path.join(pkg_dir, "..", "..", "..", "validation")),
-            os.path.abspath(os.path.join(pkg_dir, "..", "..", "validation")),
-            os.path.abspath(os.path.join(pkg_dir, "..", "validation")),
-        ]
-        for cand in cands:
-            if os.path.exists(cand) and cand not in sys.path:
-                sys.path.insert(0, cand)
-        from validate_framework import DenseBlock, MLP, ResNetBlock, SelfAttentionToy, UNetToy
-    return {
-        "Sequential MLP": (MLP(depth=4, width=64), torch.randn(8, 64)),
-        "ResNet Block": (ResNetBlock(dim=64), torch.randn(8, 64)),
-        "DenseBlock": (DenseBlock(dim=32), torch.randn(8, 32)),
-        "U-Net Toy": (UNetToy(dim=32), torch.randn(8, 32)),
-        "Self-Attention Toy": (SelfAttentionToy(dim=64), torch.randn(8, 64)),
-    }
+    """Return bundled, deterministically initialized toy graph motifs."""
+    from .canonical_models import get_canonical_models as _get
+    return _get()
 
 
 def extract_benchmark_json(
@@ -628,10 +599,15 @@ def extract_benchmark_json(
         return benchmark_data
 
     # Case B: Canonical name for a single architecture
-    if isinstance(target, str) and target in get_canonical_models():
-        mod, default_inp = get_canonical_models()[target]
-        inp = inputs if inputs is not None else default_inp
-        return extract_benchmark_json(mod, inputs=inp, steps=steps, arch_name=target, export_path=export_path)
+    if isinstance(target, str):
+        candidates = get_canonical_models()
+        if target in candidates:
+            mod, default_inp = candidates[target]
+            inp = inputs if inputs is not None else default_inp
+            return extract_benchmark_json(
+                mod, inputs=inp, steps=steps,
+                arch_name=target, export_path=export_path,
+            )
 
     # Case C: LiveTrainingMonitor
     if isinstance(target, LiveTrainingMonitor):
@@ -667,49 +643,56 @@ def extract_benchmark_json(
 
     # Case D: PyTorch nn.Module or DynamicExecutionBridge
     if isinstance(target, nn.Module) or isinstance(target, DynamicExecutionBridge):
-        if isinstance(target, nn.Module):
+        created_bridge = isinstance(target, nn.Module)
+        if created_bridge:
             model = target
             bridge = DynamicExecutionBridge(model, mode="trace")
         else:
             bridge = target
             model = bridge.model
 
-        name = arch_name or model.__class__.__name__
+        try:
+            name = arch_name or model.__class__.__name__
 
-        if inputs is None:
-            # Try to infer input shape from model or default
-            inputs = torch.randn(8, 64)
+            if inputs is None:
+                # Try to infer input shape from model or default
+                inputs = torch.randn(8, 64)
 
-        # Execute multi-step trajectory
-        for _ in range(steps):
-            # Vary inputs slightly per step to model real dynamic progression
-            step_in = inputs + 0.05 * torch.randn_like(inputs)
-            bridge.step(inputs=step_in, loss_fn=loss_fn)
+            # Execute multi-step trajectory
+            for _ in range(steps):
+                # Vary inputs slightly per step to model real dynamic progression
+                step_in = inputs + 0.05 * torch.randn_like(inputs)
+                bridge.step(inputs=step_in, loss_fn=loss_fn)
 
-        latest = bridge.trajectory[-1]
-        static_eval = bridge.static_evaluation
-        dyn_eval = latest.dynamic_evaluation
+            latest = bridge.trajectory[-1]
+            static_eval = bridge.static_evaluation
+            dyn_eval = latest.dynamic_evaluation
 
-        summary = _build_summary(name, static_eval, dyn_eval, latest.node_records)
-        step_list = _build_step_list(bridge.trajectory)
-        ablation = compute_ablation_map(bridge.static_state)
+            summary = _build_summary(name, static_eval, dyn_eval, latest.node_records)
+            step_list = _build_step_list(bridge.trajectory)
+            ablation = compute_ablation_map(bridge.static_state)
 
-        benchmark_data["architectures"][name] = {
-            "summary": summary,
-            "static_graph": bridge.static_state.to_dict(),
-            "static_evaluation": static_eval,
-            "dynamic_evaluation": dyn_eval,
-            "nodes": {nid: rec.to_dict() for nid, rec in sorted(latest.node_records.items())},
-            "edges": {f"{k[0]}->{k[1]}": stats.to_dict() for k, stats in sorted(latest.edge_records.items())},
-            "attenuation": dyn_eval.get("attenuation", {}),
-        }
-        benchmark_data["step_trajectories"][name] = step_list
-        benchmark_data["ablation_validation"][name] = ablation
+            benchmark_data["architectures"][name] = {
+                "summary": summary,
+                "static_graph": bridge.static_state.to_dict(),
+                "static_evaluation": static_eval,
+                "dynamic_evaluation": dyn_eval,
+                "nodes": {nid: rec.to_dict() for nid, rec in sorted(latest.node_records.items())},
+                "edges": {f"{k[0]}->{k[1]}": stats.to_dict() for k, stats in sorted(latest.edge_records.items())},
+                "attenuation": dyn_eval.get("attenuation", {}),
+            }
+            benchmark_data["step_trajectories"][name] = step_list
+            benchmark_data["ablation_validation"][name] = ablation
 
-        if export_path:
-            with open(export_path, "w", encoding="utf-8") as f:
-                json.dump(benchmark_data, f, indent=2)
-        return benchmark_data
+            if export_path:
+                with open(export_path, "w", encoding="utf-8") as f:
+                    json.dump(benchmark_data, f, indent=2)
+            return benchmark_data
+        finally:
+            # Only release hooks for bridges allocated inside this helper.
+            # User-owned DynamicExecutionBridge objects stay usable.
+            if created_bridge:
+                bridge.close()
 
     raise TypeError(f"Cannot extract visualizer JSON from object of type {type(target)}")
 
@@ -727,17 +710,28 @@ def _build_summary(
     bneck = static_eval.get("topological_bottleneck_ratio", 0) / SCALE if isinstance(static_eval.get("topological_bottleneck_ratio"), int) else float(static_eval.get("topological_bottleneck_ratio", 0))
     resil = static_eval.get("structural_perturbation_resilience", 0) / SCALE if isinstance(static_eval.get("structural_perturbation_resilience"), int) else float(static_eval.get("structural_perturbation_resilience", 0))
 
+    missing_aware = (dyn_eval.get("policy") or {}).get("gradient_policy") == "observed_only"
     dyn_bneck = dyn_eval.get("bottleneck", {})
-    gmax = dyn_bneck.get("max_gradient_concentration", 1.0)
-    bnode = dyn_bneck.get("bottleneck_node", "-")
+    # Preserve the archived/legacy summary values when the new opt-in policy
+    # is absent. In research mode, do not turn undefined Gmax into 1.0.
+    gmax = (dyn_bneck.get("max_concentration") if missing_aware
+            else dyn_bneck.get("max_gradient_concentration", 1.0))
+    bnode = dyn_bneck.get("bottleneck_node", None if missing_aware else "-")
 
     align = dyn_eval.get("alignment", {})
-    rho_ag = align.get("spearman_rho", 0.0)
-    r_ag = align.get("pearson_r", 0.0)
+    rho_ag = align.get("spearman_rho", None if missing_aware else 0.0)
+    r_ag = align.get("pearson_r", None if missing_aware else 0.0)
 
     temporal = dyn_eval.get("temporal") or {}
-    cv_vals = [s.get("cv", 0.0) for s in temporal.values() if isinstance(s, dict)]
-    mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else 0.0
+    if missing_aware:
+        cv_vals = [
+            float(s["cv"]) for s in temporal.values()
+            if isinstance(s, dict) and s.get("cv") is not None
+        ]
+        mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else None
+    else:
+        cv_vals = [s.get("cv", 0.0) for s in temporal.values() if isinstance(s, dict)]
+        mean_cv = float(sum(cv_vals) / len(cv_vals)) if cv_vals else 0.0
 
     cats = (dyn_eval.get("correspondence") or {}).get("node_categories") or {}
     type_counts = {"Type I": 0, "Type II": 0, "Type III": 0, "Type IV": 0}
@@ -746,7 +740,14 @@ def _build_summary(
             type_counts[c] += 1
 
     act_rms_list = [r.activation.rms for r in node_records.values() if r.activation]
-    grad_rms_list = [r.activation_gradient.rms for r in node_records.values() if r.activation_gradient]
+    if missing_aware:
+        measured = (dyn_eval.get("metric_populations") or {}).get("gradient", [])
+        grad_rms_list = [
+            node_records[nid].activation_gradient.rms for nid in measured
+            if nid in node_records and node_records[nid].activation_gradient is not None
+        ]
+    else:
+        grad_rms_list = [r.activation_gradient.rms for r in node_records.values() if r.activation_gradient]
 
     return {
         "name": name,
@@ -755,12 +756,15 @@ def _build_summary(
         "topological_bottleneck": round(bneck, 4),
         "resilience": round(resil, 4),
         "mean_act_flow": float(sum(act_rms_list) / max(1, len(act_rms_list))),
-        "mean_grad_flow": float(sum(grad_rms_list) / max(1, len(grad_rms_list))),
-        "grad_bottleneck_gmax": round(gmax, 4),
+        "mean_grad_flow": (
+            float(sum(grad_rms_list) / len(grad_rms_list))
+            if grad_rms_list else (None if missing_aware else 0.0)
+        ),
+        "grad_bottleneck_gmax": round(gmax, 4) if gmax is not None else None,
         "bottleneck_node": bnode,
-        "spearman_act_grad": round(rho_ag, 4),
-        "pearson_act_grad": round(r_ag, 4),
-        "mean_stability_cv": round(mean_cv, 4),
+        "spearman_act_grad": round(rho_ag, 4) if rho_ag is not None else None,
+        "pearson_act_grad": round(r_ag, 4) if r_ag is not None else None,
+        "mean_stability_cv": round(mean_cv, 4) if mean_cv is not None else None,
         "type_counts": type_counts,
     }
 

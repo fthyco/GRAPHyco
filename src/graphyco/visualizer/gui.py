@@ -1,28 +1,26 @@
 from __future__ import annotations
 
-import os
-os.environ.setdefault("QTWEBENGINE_DISABLE_SANDBOX", "1")
-os.environ.setdefault("QTWEBENGINE_CHROMIUM_FLAGS", "--no-sandbox --disable-gpu --disable-gpu-compositing")
-
-
+# Do not disable Chromium's sandbox globally. When running as root or in a
+# restricted container the host must configure QtWebEngine securely; this
+# library must not silently disable browser sandbox protections.
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, Union, Callable, Tuple
+from typing import Any, Dict, Optional, Union, Callable
+
+import torch
 
 from .query import extract_benchmark_json, QueryEngine
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QFont, QIcon
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -35,13 +33,27 @@ from PySide6.QtWidgets import (
 
 try:
     from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
     HAS_WEBENGINE = True
-except Exception:
+except ImportError:
     HAS_WEBENGINE = False
 
 from .diagnostics import GradientHealthStatus, LiveTrainingDiagnostics
-from .query import QueryEngine
 from .renderer import Renderer
+
+
+if HAS_WEBENGINE:
+    class _RestrictedGraphPage(QWebEnginePage):
+        """Block top-level remote and local navigations from benchmark data."""
+
+        def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
+            if url.scheme().lower() in {
+                "http", "https", "ftp", "file", "javascript"
+            }:
+                return False
+            return super().acceptNavigationRequest(
+                url, navigation_type, is_main_frame
+            )
 
 
 class VisualizerDesktopApp(QMainWindow):
@@ -104,8 +116,9 @@ class VisualizerDesktopApp(QMainWindow):
 
         data_dict = self.query_engine.data if self.query_engine else {}
         html_content = self._renderer.assemble(data_dict)
-        base_url = QUrl.fromLocalFile(self._renderer.static_dir + "/")
-        self.web_view.setHtml(html_content, base_url)
+        # All required JS/CSS/data are already embedded. Avoid a file://
+        # base URL, which would grant additional local-file origin privileges.
+        self.web_view.setHtml(html_content, QUrl("about:blank"))
 
 
 
@@ -220,6 +233,20 @@ class VisualizerDesktopApp(QMainWindow):
 
         if HAS_WEBENGINE:
             self.web_view = QWebEngineView(tab_graph)
+            self.web_view.setPage(_RestrictedGraphPage(self.web_view))
+            web_settings = self.web_view.settings()
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls,
+                False,
+            )
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls,
+                False,
+            )
+            web_settings.setAttribute(
+                QWebEngineSettings.WebAttribute.JavascriptCanOpenWindows,
+                False,
+            )
             layout_graph.addWidget(self.web_view)
             self._render_graph_view()
         else:
@@ -356,16 +383,19 @@ class VisualizerDesktopApp(QMainWindow):
         arch = archs[0]
         s = self.query_engine.get_summary(arch)
 
+        def display_optional_number(value):
+            return f"{value:.4f}" if isinstance(value, (int, float)) else "N/A"
+
         invariants_data = [
             ("Target Architecture", str(s.get("name", arch)), "Primary computational graph model"),
             ("Graph Density (D)", f"{s.get('density', 0.0):.4f}", "|E| / (|V|(|V|-1)) connectivity ratio"),
             ("Connectivity Coherence (C)", f"{s.get('coherence', 0.0):.4f}", "Conservation of incoming vs outgoing gradient flow"),
             ("Topological Bottleneck", f"{s.get('topological_bottleneck', 0.0):.4f}", "Peak betweenness centrality across DAG nodes"),
             ("Structural Resilience (R)", f"{s.get('resilience', 0.0):.4f}", "Fraction of downstream paths preserved under ablation"),
-            ("Dynamic Bottleneck (G_max)", f"{s.get('grad_bottleneck_gmax', 0.0):.4f}", "Peak gradient accumulation concentration factor"),
+            ("Dynamic Bottleneck (G_max)", display_optional_number(s.get('grad_bottleneck_gmax', 0.0)), "Peak gradient accumulation concentration factor"),
             ("Primary Bottleneck Node", str(s.get("bottleneck_node", "None")), "Layer exhibiting maximal gradient accumulation"),
-            ("Spearman Rank (rho_AG)", f"{s.get('spearman_act_grad', 0.0):.4f}", "Rank correlation between activations and gradients"),
-            ("Stability CV", f"{s.get('mean_stability_cv', 0.0):.4f}", "Temporal coefficient of variation across recorded steps"),
+            ("Spearman Rank (rho_AG)", display_optional_number(s.get('spearman_act_grad', 0.0)), "Rank correlation between activations and gradients"),
+            ("Stability CV", display_optional_number(s.get('mean_stability_cv', 0.0)), "Temporal coefficient of variation across recorded steps"),
         ]
 
         self.invariants_table.setRowCount(len(invariants_data))
@@ -516,12 +546,12 @@ def launch_app(
         try:
             
             from PySide6.QtWidgets import QApplication
-            import sys
             app = QApplication.instance() or QApplication(sys.argv)
-            window = launch_desktop_app(data=data)
+            _window = launch_desktop_app(data=data)
             app.exec()
         except ImportError:
-            import tempfile, webbrowser
+            import tempfile
+            import webbrowser
             from .renderer import Renderer
             if isinstance(data, str) and data.endswith(".json"):
                 with open(data, "r", encoding="utf-8") as f:

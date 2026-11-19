@@ -5,7 +5,6 @@ import json
 import sys
 
 from .query import extract_benchmark_json, QueryEngine
-from .gui import launch_app, visualize
 
 
 def main() -> None:
@@ -94,7 +93,7 @@ def main() -> None:
         data = target
 
     app = QApplication.instance() or QApplication(sys.argv)
-    window = launch_desktop_app(data=data)
+    _window = launch_desktop_app(data=data)
     print("[Visualizer] Running native desktop application window...")
     sys.exit(app.exec())
 

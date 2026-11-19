@@ -9,19 +9,19 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torch.fx import GraphModule, symbolic_trace
+from torch.fx import symbolic_trace
 
-from core.evaluation import evaluate, perturbation_profile
-from core.primitives import Edge, GraphState, SCALE
-from observer.grad_eval import evaluate_dynamic_flow
-from observer.grad_observer import (
+from ..core.evaluation import evaluate, perturbation_profile
+from ..core.primitives import GraphState
+from ..observer.grad_eval import evaluate_dynamic_flow
+from ..observer.analysis_policy import AnalysisPolicy, NodeIdentityRegistry
+from ..observer.grad_observer import (
     DynamicNodeRecord,
     FXGradObserver,
     ModuleGradObserver,
     TensorStats,
-    compute_tensor_stats,
 )
-from .torch_bridge import module_to_graph, trace_to_graph
+from .torch_bridge import module_to_graph, _fx_to_graph
 
 
 # ══════════════════════════════════════════════════════════════
@@ -108,10 +108,11 @@ class DynamicGraphState:
 # ══════════════════════════════════════════════════════════════
 
 class DynamicExecutionBridge:
-    """Manages observational forward and backward graph execution.
+    """Executes instrumented forward/backward analysis and optional training.
 
-    Coordinates between PyTorch model evaluation, static graph extraction,
-    and dynamic runtime monitoring.
+    With no optimizer, parameter gradients are restored after telemetry
+    extraction, but forward buffers and RNG may still change. With an
+    optimizer, this method explicitly applies optimizer updates.
     """
 
     def __init__(
@@ -120,28 +121,52 @@ class DynamicExecutionBridge:
         mode: str = "trace",
         concrete_args: Optional[Dict] = None,
         record_edges: bool = True,
+        strict_trace: bool = False,
+        max_history_steps: Optional[int] = 128,
+        stats_backend: str = "cpu",
+        analysis_policy: Optional[AnalysisPolicy] = None,
+        identity_registry: Optional[NodeIdentityRegistry] = None,
     ):
         self.model = model
+        if mode not in ("trace", "module"):
+            raise ValueError(f"Unknown extraction mode: {mode!r}")
         self.mode = mode
         self.concrete_args = concrete_args
         self.record_edges = record_edges
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
+        self.analysis_policy = analysis_policy
+        self.identity_registry = identity_registry
+        if max_history_steps is not None and max_history_steps < 1:
+            raise ValueError("max_history_steps must be >= 1 or None")
+        self.max_history_steps = max_history_steps
+        self._closed = False
 
-        # Extract static graph representation
+        # A single FX trace feeds both the graph and the interpreter:
+        # previously they were traced independently and could diverge.
         if self.mode == "trace":
             try:
-                self.static_state = trace_to_graph(model, concrete_args=concrete_args)
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
-                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
-            except Exception:
-                # Fallback to module mode if FX symbolic trace fails
+                self.static_state = _fx_to_graph(model, self.traced_module)
+                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges, stats_backend=stats_backend)
+            except Exception as exc:
+                if strict_trace:
+                    raise
                 self.mode = "module"
                 self.static_state = module_to_graph(model)
+                self.static_state.provenance.update({
+                    "trace_status": "failed",
+                    "fallback_from": "fx_symbolic_trace",
+                    "fallback_reason_type": type(exc).__name__,
+                    "fallback_reason": str(exc)[:500],
+                })
                 self.traced_module = None
-                self.observer = ModuleGradObserver(model)
+                self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
         else:
             self.static_state = module_to_graph(model)
             self.traced_module = None
-            self.observer = ModuleGradObserver(model)
+            self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
 
         self.static_evaluation = evaluate(self.static_state)
         self.static_profile = perturbation_profile(self.static_state)
@@ -163,6 +188,8 @@ class DynamicExecutionBridge:
         4. Parameter gradient capture
         5. Flow statistics and metric evaluation
         """
+        if self._closed:
+            raise RuntimeError("DynamicExecutionBridge has been closed")
         self.step_counter += 1
         self.observer.reset()
 
@@ -205,45 +232,81 @@ class DynamicExecutionBridge:
         # 3. Backward pass
         if optimizer is not None:
             optimizer.zero_grad()
-        loss.backward()
+        # Measure *this* diagnostic backward, not pre-existing caller
+        # gradients plus the current backward. Keep the exact original
+        # gradient tensor objects (including None) to restore on exit.
+        # This avoids both distorted telemetry and invalidating references
+        # held by external training code.
+        prior_grads = None
+        if optimizer is None:
+            prior_grads = [
+                (parameter, parameter.grad)
+                for parameter in self.model.parameters()
+            ]
+            for parameter, _ in prior_grads:
+                parameter.grad = None
+        try:
+            loss.backward()
 
-        # 4. Parameter gradient capture
-        self.observer.capture_parameter_gradients()
+            # 4. Parameter gradient capture
+            self.observer.capture_parameter_gradients()
 
-        # 5. Extract records
-        if isinstance(self.observer, FXGradObserver):
-            node_records, edge_records = self.observer.extract_records()
-        else:
-            node_records = self.observer.extract_records()
-            edge_records = {}
+            # 5. Extract records
+            if isinstance(self.observer, FXGradObserver):
+                node_records, edge_records = self.observer.extract_records()
+            else:
+                node_records = self.observer.extract_records()
+                edge_records = {}
 
-        # Build trajectory for temporal analysis
-        trajectory_records = [s.node_records for s in self.trajectory] + [node_records]
+            # Window-aware temporal analysis; keep only a bounded number of
+            # full metric snapshots and node-record dictionaries in memory.
+            previous = self.trajectory
+            if self.max_history_steps is not None:
+                previous = previous[-max(0, self.max_history_steps - 1):] if self.max_history_steps > 1 else []
+            trajectory_records = [s.node_records for s in previous] + [node_records]
 
-        # 6. Evaluate dynamic metrics
-        dynamic_eval = evaluate_dynamic_flow(
-            graph_state=self.static_state,
-            node_records=node_records,
-            edge_records=edge_records,
-            static_perturbation_profile=self.static_profile,
-            trajectory=trajectory_records,
-        )
+            # 6. Evaluate dynamic metrics
+            dynamic_eval = evaluate_dynamic_flow(
+                graph_state=self.static_state,
+                node_records=node_records,
+                edge_records=edge_records,
+                static_perturbation_profile=self.static_profile,
+                trajectory=trajectory_records,
+                analysis_policy=self.analysis_policy,
+                identity_registry=self.identity_registry,
+            )
 
-        state = DynamicGraphState(
-            graph_state=self.static_state,
-            step=self.step_counter,
-            node_records=node_records,
-            edge_records=edge_records,
-            static_evaluation=self.static_evaluation,
-            dynamic_evaluation=dynamic_eval,
-        )
-        self.trajectory.append(state)
+            state = DynamicGraphState(
+                graph_state=self.static_state,
+                step=self.step_counter,
+                node_records=node_records,
+                edge_records=edge_records,
+                static_evaluation=self.static_evaluation,
+                dynamic_evaluation=dynamic_eval,
+            )
+            self.trajectory.append(state)
+            if self.max_history_steps is not None:
+                del self.trajectory[:-self.max_history_steps]
 
-        # 7. Optimizer step if requested
-        if optimizer is not None:
-            optimizer.step()
+            # 7. Optimizer step if requested
+            if optimizer is not None:
+                optimizer.step()
 
-        return state
+            return state
+
+        finally:
+            if prior_grads is not None:
+                for parameter, grad in prior_grads:
+                    parameter.grad = grad
+
+    def close(self) -> None:
+        """Release persistent hooks in module fallback mode."""
+        if self._closed:
+            return
+        if isinstance(self.observer, ModuleGradObserver):
+            self.observer.enabled = False
+            self.observer.remove_hooks()
+        self._closed = True
 
     def run_training_trajectory(
         self,
@@ -279,10 +342,18 @@ def monitor_model(
     loss_fn: Optional[Callable] = None,
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
+    analysis_policy: Optional[AnalysisPolicy] = None,
+    identity_registry: Optional[NodeIdentityRegistry] = None,
 ) -> DynamicGraphState:
-    """One-line convenience function to monitor a forward and backward pass on a PyTorch model."""
-    bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args)
-    return bridge.step(inputs=inputs, loss_fn=loss_fn)
+    """One-shot monitoring with an optional explicit analysis interpretation."""
+    bridge = DynamicExecutionBridge(
+        model, mode=mode, concrete_args=concrete_args,
+        analysis_policy=analysis_policy, identity_registry=identity_registry,
+    )
+    try:
+        return bridge.step(inputs=inputs, loss_fn=loss_fn)
+    finally:
+        bridge.close()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -290,9 +361,13 @@ def monitor_model(
 # ══════════════════════════════════════════════════════════════
 
 class LiveTrainingMonitor:
-    """Non-intrusive live monitor for running PyTorch training loops.
+    """Live training monitor with explicit instrumentation tradeoffs.
 
-    Attaches directly to any custom training loop via context manager:
+    FX mode temporarily replaces model.forward with an interpreter; module
+    mode executes the original forward and uses output-tensor hooks.
+    Neither mode promises parity for arbitrary custom PyTorch models.
+
+    Attaches to training loops via context manager:
         monitor = LiveTrainingMonitor(model, log_interval=10)
 
         for step, (x, y) in enumerate(dataloader):
@@ -318,27 +393,52 @@ class LiveTrainingMonitor:
         concrete_args: Optional[Dict] = None,
         log_interval: int = 1,
         record_edges: bool = True,
+        strict_trace: bool = False,
+        max_history_steps: Optional[int] = 128,
+        stats_backend: str = "cpu",
+        analysis_policy: Optional[AnalysisPolicy] = None,
+        identity_registry: Optional[NodeIdentityRegistry] = None,
     ):
         self.model = model
+        if mode not in ("trace", "module"):
+            raise ValueError(f"Unknown extraction mode: {mode!r}")
         self.mode = mode
         self.concrete_args = concrete_args
         self.log_interval = max(1, log_interval)
         self.record_edges = record_edges
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
+        self.analysis_policy = analysis_policy
+        self.identity_registry = identity_registry
+        if max_history_steps is not None and max_history_steps < 1:
+            raise ValueError("max_history_steps must be >= 1 or None")
+        self.max_history_steps = max_history_steps
+        self._closed = False
+        self._observing = False
 
         if self.mode == "trace":
             try:
-                self.static_state = trace_to_graph(model, concrete_args=concrete_args)
                 self.traced_module = symbolic_trace(model, concrete_args=concrete_args)
-                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges)
-            except Exception:
+                self.static_state = _fx_to_graph(model, self.traced_module)
+                self.observer = FXGradObserver(self.traced_module, record_edges=record_edges, stats_backend=stats_backend)
+            except Exception as exc:
+                if strict_trace:
+                    raise
                 self.mode = "module"
                 self.static_state = module_to_graph(model)
+                self.static_state.provenance.update({
+                    "trace_status": "failed",
+                    "fallback_from": "fx_symbolic_trace",
+                    "fallback_reason_type": type(exc).__name__,
+                    "fallback_reason": str(exc)[:500],
+                })
                 self.traced_module = None
-                self.observer = ModuleGradObserver(model)
+                self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
         else:
             self.static_state = module_to_graph(model)
             self.traced_module = None
-            self.observer = ModuleGradObserver(model)
+            self.observer = ModuleGradObserver(model, stats_backend=stats_backend)
 
         self.static_evaluation = evaluate(self.static_state)
         self.static_profile = perturbation_profile(self.static_state)
@@ -346,6 +446,9 @@ class LiveTrainingMonitor:
         self.latest_state: Optional[DynamicGraphState] = None
         self._new_data: bool = False
         self._orig_forward: Optional[Callable] = None
+        if isinstance(self.observer, ModuleGradObserver):
+            # No forward/backward capture on unselected training steps.
+            self.observer.enabled = False
 
     def has_new_data(self) -> bool:
         """Returns True if the most recent step was observed and metrics were computed."""
@@ -384,40 +487,63 @@ class LiveTrainingMonitor:
 
     @contextmanager
     def observe(self, step: int):
-        """Context manager wrapping forward, loss, backward, and optimizer execution."""
+        """Capture an active training step and always restore model state.
+
+        FX mode temporarily substitutes the model forward with an FX
+        Interpreter; this is an explicit runtime intervention and may not
+        preserve custom Python forward side effects. Use mode="module"
+        to execute the original model.forward without replacement.
+        """
+        if self._closed:
+            raise RuntimeError("LiveTrainingMonitor has been closed")
+        if self._observing:
+            raise RuntimeError("LiveTrainingMonitor observation already active")
+
+        self._observing = True
         active = (step % self.log_interval == 0)
         self._new_data = False
-        if active:
-            self.observer.reset()
-            if self.mode == "trace":
-                self._orig_forward = self.model.forward
-                self.model.forward = lambda *args, **kwargs: self.observer.run(*args, **kwargs)
+        had_instance_forward = "forward" in self.model.__dict__
+        instance_forward = self.model.__dict__.get("forward")
+
         try:
+            self.observer.reset()
+            if isinstance(self.observer, ModuleGradObserver):
+                self.observer.enabled = active
+            if active and self.mode == "trace":
+                self.model.forward = lambda *args, **kwargs: self.observer.run(
+                    *args, **kwargs
+                )
+
             yield self
-        finally:
+
+            # Do not commit an incomplete telemetry snapshot when the
+            # caller's forward/backward/optimizer block raises.
             if active:
-                if self.mode == "trace" and self._orig_forward is not None:
-                    self.model.forward = self._orig_forward
-                    self._orig_forward = None
-
                 self.observer.capture_parameter_gradients()
-
-                if hasattr(self.observer, "extract_records") and self.mode == "trace":
+                if isinstance(self.observer, FXGradObserver):
                     node_recs, edge_recs = self.observer.extract_records()
                 else:
                     node_recs = self.observer.extract_records()
                     edge_recs = {}
 
-                traj_recs = [s.node_records for s in self.trajectory] + [node_recs]
+                previous = self.trajectory
+                if self.max_history_steps is not None:
+                    previous = (
+                        previous[-(self.max_history_steps - 1):]
+                        if self.max_history_steps > 1 else []
+                    )
+                traj_recs = [s.node_records for s in previous] + [node_recs]
                 dyn_eval = evaluate_dynamic_flow(
                     self.static_state,
                     node_recs,
                     edge_records=edge_recs,
                     static_perturbation_profile=self.static_profile,
                     trajectory=traj_recs,
+                    analysis_policy=self.analysis_policy,
+                    identity_registry=self.identity_registry,
                 )
 
-                self.latest_state = DynamicGraphState(
+                state = DynamicGraphState(
                     graph_state=self.static_state,
                     step=step,
                     node_records=node_recs,
@@ -425,6 +551,30 @@ class LiveTrainingMonitor:
                     static_evaluation=self.static_evaluation,
                     dynamic_evaluation=dyn_eval,
                 )
-                self.trajectory.append(self.latest_state)
+                self.latest_state = state
+                self.trajectory.append(state)
+                if self.max_history_steps is not None:
+                    del self.trajectory[:-self.max_history_steps]
                 self._new_data = True
+        finally:
+            if active and self.mode == "trace":
+                # Preserve the exact original instance attribute (or absence),
+                # not a new bound method stored in the instance dictionary.
+                if had_instance_forward:
+                    self.model.forward = instance_forward
+                else:
+                    self.model.__dict__.pop("forward", None)
+            if isinstance(self.observer, ModuleGradObserver):
+                self.observer.enabled = False
+            self._observing = False
 
+    def close(self) -> None:
+        """Detach persistent module hooks; idempotent and safe to repeat."""
+        if self._observing:
+            raise RuntimeError("Cannot close LiveTrainingMonitor while observing")
+        if self._closed:
+            return
+        if isinstance(self.observer, ModuleGradObserver):
+            self.observer.enabled = False
+            self.observer.remove_hooks()
+        self._closed = True

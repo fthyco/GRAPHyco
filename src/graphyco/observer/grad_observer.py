@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torch.fx import GraphModule, Interpreter, Node as FxNode
 
-from core.primitives import SCALE
+from ..core.primitives import SCALE
 
 
 # ══════════════════════════════════════════════════════════════
@@ -52,8 +52,19 @@ class TensorStats:
         }
 
 
-def compute_tensor_stats(t: Optional[torch.Tensor], scale: int = SCALE) -> Optional[TensorStats]:
-    """Computes full mathematical statistics for a tensor in an observational manner."""
+def compute_tensor_stats(
+    t: Optional[torch.Tensor], scale: int = SCALE, backend: str = "cpu"
+) -> Optional[TensorStats]:
+    """Compute exact summary fields, optionally reducing on the tensor device.
+
+    backend='cpu' retains the historical float64 CPU reduction path.
+    backend='device' reduces on the source device and transfers a small
+    packed vector of scalar statistics to the host once. On CUDA, this
+    avoids copying the entire activation/gradient tensor to CPU, though
+    double precision reductions may still be expensive on some GPUs.
+    """
+    if backend not in ("cpu", "device"):
+        raise ValueError("stats backend must be 'cpu' or 'device'")
     if t is None:
         return None
 
@@ -76,6 +87,39 @@ def compute_tensor_stats(t: Optional[torch.Tensor], scale: int = SCALE) -> Optio
             normalized_magnitude=0.0,
             fixed_point_rms=0,
         )
+
+    if backend == "device":
+        with torch.no_grad():
+            flat = t.detach().flatten().to(dtype=torch.float64)
+            finite_mask = torch.isfinite(flat)
+            zero_count = (flat == 0.0).sum().to(dtype=torch.float64)
+            non_finite_count = (~finite_mask).sum().to(dtype=torch.float64)
+            safe_flat = torch.nan_to_num(
+                flat, nan=0.0, posinf=1e12, neginf=-1e12
+            )
+            l1 = torch.linalg.norm(safe_flat, ord=1)
+            l2 = torch.linalg.norm(safe_flat, ord=2)
+            # One host synchronization for all scalar fields on CUDA.
+            values = torch.stack([
+                safe_flat.mean(),
+                safe_flat.std(unbiased=False) if numel > 1 else l2 * 0.0,
+                safe_flat.min(),
+                safe_flat.max(),
+                l1, l2, zero_count, non_finite_count,
+            ]).to(device="cpu").tolist()
+            mean, std, min_val, max_val, l1_val, l2_val, zeros, non_finite = (
+                float(value) for value in values
+            )
+            rms = l2_val / math.sqrt(numel)
+            return TensorStats(
+                numel=numel, mean=mean, std=std,
+                min_val=min_val, max_val=max_val,
+                l1_norm=l1_val, l2_norm=l2_val, rms=rms,
+                zero_fraction=zeros / numel,
+                non_finite_fraction=non_finite / numel,
+                normalized_magnitude=rms,
+                fixed_point_rms=int(round(rms * scale)),
+            )
 
     with torch.no_grad():
         # Detach and convert to double on CPU for numerical stability
@@ -145,7 +189,14 @@ class EdgeAutogradHook(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output: Optional[torch.Tensor]):
         if grad_output is not None and ctx.sink is not None:
-            ctx.sink[ctx.edge_key] = grad_output.detach().clone()
+            # The same symbolic source may occur more than once in a
+            # consumer's arguments, e.g. torch.add(x, x). Accumulate the
+            # contributions instead of silently keeping only the last one.
+            grad = grad_output.detach()
+            previous = ctx.sink.get(ctx.edge_key)
+            ctx.sink[ctx.edge_key] = (
+                grad.clone() if previous is None else previous + grad
+            )
         return grad_output, None, None
 
 
@@ -190,25 +241,38 @@ class FXGradObserver(Interpreter):
     4. Parameter gradients dL/dW_i for modules invoked by call_module nodes.
     """
 
-    def __init__(self, module: GraphModule, record_edges: bool = True):
+    def __init__(
+        self, module: GraphModule, record_edges: bool = True,
+        stats_backend: str = "cpu",
+    ):
         super().__init__(module)
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
         self.record_edges = record_edges
+        self.stats_backend = stats_backend
         self.reset()
 
     def reset(self) -> None:
         """Clears captured runtime tensors."""
         self.raw_activations: Dict[str, torch.Tensor] = {}
         self.raw_activation_grads: Dict[str, torch.Tensor] = {}
+        self.raw_output_component_grads: Dict[Tuple[str, int], torch.Tensor] = {}
         self.raw_edge_grads: Dict[Tuple[str, str], torch.Tensor] = {}
         self.raw_param_grads: Dict[str, torch.Tensor] = {}
         self.node_types: Dict[str, str] = {}
         self.node_modules: Dict[str, nn.Module] = {}
 
-    def _attach_tensor_hook(self, name: str, t: torch.Tensor) -> None:
+    def _attach_tensor_hook(
+        self, name: str, t: torch.Tensor, component_index: int = 0
+    ) -> None:
+        """Track tuple components independently; public node stats use first."""
         if t.requires_grad:
             def hook(grad: torch.Tensor):
                 if grad is not None:
-                    self.raw_activation_grads[name] = grad.detach().clone()
+                    snapshot = grad.detach().clone()
+                    self.raw_output_component_grads[(name, component_index)] = snapshot
+                    if component_index == 0:
+                        self.raw_activation_grads[name] = snapshot
             t.register_hook(hook)
 
     def run_node(self, n: FxNode) -> Any:
@@ -252,8 +316,8 @@ class FXGradObserver(Interpreter):
             tensor_items = [item for item in out if isinstance(item, torch.Tensor)]
             if tensor_items:
                 self.raw_activations[n.name] = tensor_items[0].detach().clone()
-                for item in tensor_items:
-                    self._attach_tensor_hook(n.name, item)
+                for index, item in enumerate(tensor_items):
+                    self._attach_tensor_hook(n.name, item, component_index=index)
 
         return out
 
@@ -262,7 +326,10 @@ class FXGradObserver(Interpreter):
         for name, mod in self.node_modules.items():
             param_tensors = [p.grad for p in mod.parameters(recurse=False) if p.grad is not None]
             if param_tensors:
-                flat_grads = torch.cat([p.flatten().to(dtype=torch.float64, device="cpu") for p in param_tensors])
+                flat_grads = torch.cat([
+                    grad.detach().flatten().to(dtype=torch.float64, device="cpu")
+                    for grad in param_tensors
+                ])
                 self.raw_param_grads[name] = flat_grads
 
     def extract_records(self, eps: float = 1e-8) -> Tuple[Dict[str, DynamicNodeRecord], Dict[Tuple[str, str], TensorStats]]:
@@ -272,9 +339,9 @@ class FXGradObserver(Interpreter):
         all_node_names = set(self.raw_activations.keys()) | set(self.raw_activation_grads.keys()) | set(self.node_types.keys())
 
         for name in sorted(all_node_names):
-            act_stats = compute_tensor_stats(self.raw_activations.get(name))
-            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name))
-            param_stats = compute_tensor_stats(self.raw_param_grads.get(name))
+            act_stats = compute_tensor_stats(self.raw_activations.get(name), backend=self.stats_backend)
+            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name), backend=self.stats_backend)
+            param_stats = compute_tensor_stats(self.raw_param_grads.get(name), backend=self.stats_backend)
 
             ratio = None
             if act_stats is not None and grad_stats is not None:
@@ -294,7 +361,7 @@ class FXGradObserver(Interpreter):
 
         edge_records: Dict[Tuple[str, str], TensorStats] = {}
         for edge_key, grad_t in sorted(self.raw_edge_grads.items()):
-            e_stats = compute_tensor_stats(grad_t)
+            e_stats = compute_tensor_stats(grad_t, backend=self.stats_backend)
             if e_stats is not None:
                 edge_records[edge_key] = e_stats
 
@@ -308,13 +375,23 @@ class FXGradObserver(Interpreter):
 class ModuleGradObserver:
     """Observational runtime monitor for PyTorch nn.Module hierarchies.
 
-    Uses register_forward_hook and register_full_backward_hook to monitor
-    module-level activations and output gradients without symbolic tracing.
+    Uses module forward hooks plus tensor output gradient hooks. It does not
+    install register_full_backward_hook, avoiding PyTorch's extra input/output
+    views and the associated no-input-grad warning. Hooks capture the most
+    recent invocation for a reused module name (not the full call history).
+
+    For a torch.compile OptimizedModule, the top-level output boundary is
+    observed explicitly. Inductor may fuse and bypass child module hooks, so
+    child-node telemetry cannot be asserted without corresponding hook data.
     """
 
-    def __init__(self, model: nn.Module):
+    def __init__(self, model: nn.Module, stats_backend: str = "cpu"):
         self.model = model
+        if stats_backend not in ("cpu", "device"):
+            raise ValueError("stats_backend must be 'cpu' or 'device'")
+        self.stats_backend = stats_backend
         self.handles: List[Any] = []
+        self.enabled = True
         self.reset()
         self._register_hooks()
 
@@ -328,25 +405,47 @@ class ModuleGradObserver:
         for name, module in self.model.named_modules():
             if not name:
                 name = "root"
-            # Only monitor leaf modules
-            if len(list(module.children())) == 0:
+            # Normal modules are monitored at leaves. A torch.compile wrapper
+            # may execute fused kernels without invoking any original leaf
+            # module Python hooks. Retain an honest, model-level measurement
+            # by observing the *actual wrapper output* as root instead.
+            compiled_boundary = (
+                name == "root"
+                and hasattr(module, "_orig_mod")
+                and hasattr(module, "_torchdynamo_orig_callable")
+            )
+            if len(list(module.children())) == 0 or compiled_boundary:
                 self.module_types[name] = type(module).__name__
-                h1 = module.register_forward_hook(self._make_fwd_hook(name))
-                h2 = module.register_full_backward_hook(self._make_bwd_hook(name))
-                self.handles.extend([h1, h2])
+                self.handles.append(
+                    module.register_forward_hook(self._make_fwd_hook(name))
+                )
 
     def _make_fwd_hook(self, name: str) -> Callable:
         def hook(module: nn.Module, inp: Any, outp: Any) -> None:
+            if not self.enabled:
+                return
+            # Only the first tensor output is represented as the public
+            # module activation. Tuple components beyond the first are not
+            # silently re-labeled as that activation.
             if isinstance(outp, torch.Tensor):
-                self.raw_activations[name] = outp.detach().clone()
-            elif isinstance(outp, (tuple, list)) and len(outp) > 0 and isinstance(outp[0], torch.Tensor):
-                self.raw_activations[name] = outp[0].detach().clone()
-        return hook
+                tensor = outp
+            elif isinstance(outp, (tuple, list)):
+                tensor = next(
+                    (item for item in outp if isinstance(item, torch.Tensor)),
+                    None,
+                )
+            else:
+                tensor = None
 
-    def _make_bwd_hook(self, name: str) -> Callable:
-        def hook(module: nn.Module, grad_input: Any, grad_output: Any) -> None:
-            if grad_output and len(grad_output) > 0 and isinstance(grad_output[0], torch.Tensor):
-                self.raw_activation_grads[name] = grad_output[0].detach().clone()
+            if tensor is None:
+                return
+            self.raw_activations[name] = tensor.detach().clone()
+            if tensor.requires_grad:
+                def record_output_grad(grad: torch.Tensor) -> None:
+                    if self.enabled and grad is not None:
+                        self.raw_activation_grads[name] = grad.detach().clone()
+
+                tensor.register_hook(record_output_grad)
         return hook
 
     def capture_parameter_gradients(self) -> None:
@@ -355,7 +454,10 @@ class ModuleGradObserver:
                 name = "root"
             param_tensors = [p.grad for p in module.parameters(recurse=False) if p.grad is not None]
             if param_tensors:
-                flat_grads = torch.cat([p.flatten().to(dtype=torch.float64, device="cpu") for p in param_tensors])
+                flat_grads = torch.cat([
+                    grad.detach().flatten().to(dtype=torch.float64, device="cpu")
+                    for grad in param_tensors
+                ])
                 self.raw_param_grads[name] = flat_grads
 
     def remove_hooks(self) -> None:
@@ -367,9 +469,9 @@ class ModuleGradObserver:
         records: Dict[str, DynamicNodeRecord] = {}
         all_names = set(self.raw_activations.keys()) | set(self.raw_activation_grads.keys()) | set(self.module_types.keys())
         for name in sorted(all_names):
-            act_stats = compute_tensor_stats(self.raw_activations.get(name))
-            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name))
-            param_stats = compute_tensor_stats(self.raw_param_grads.get(name))
+            act_stats = compute_tensor_stats(self.raw_activations.get(name), backend=self.stats_backend)
+            grad_stats = compute_tensor_stats(self.raw_activation_grads.get(name), backend=self.stats_backend)
+            param_stats = compute_tensor_stats(self.raw_param_grads.get(name), backend=self.stats_backend)
 
             ratio = None
             if act_stats is not None and grad_stats is not None:

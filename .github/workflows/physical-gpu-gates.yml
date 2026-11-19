@@ -1,0 +1,46 @@
+name: Physical GPU / NCCL / Inductor pre-merge gates
+
+# This workflow is explicitly manual. It requires correctly labelled runners.
+# Running CPU-only CI does NOT satisfy these hardware requirements.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  physical-cuda-amp-inductor:
+    runs-on: [self-hosted, linux, x64, gpu]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify hardware and install package
+        run: |
+          python -m pip install -e ".[dev]"
+          python -c "import torch; assert torch.cuda.is_available(), 'GPU required'"
+      - name: CUDA AMP and Inductor training / metric parity
+        run: python benchmarks/gpu_hardware_gates.py --mode single --output /tmp/cuda-gate.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: physical-cuda-gate
+          path: /tmp/cuda-gate.json
+          if-no-files-found: warn
+
+  physical-multigpu-nccl:
+    runs-on: [self-hosted, linux, x64, multi-gpu]
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify two physical CUDA GPUs and install
+        run: |
+          python -m pip install -e ".[dev]"
+          python -c "import torch; assert torch.cuda.device_count() >= 2, 'two GPUs required'"
+      - name: True NCCL two-rank training allreduce parity
+        run: python -m torch.distributed.run --standalone --nproc-per-node=2 benchmarks/gpu_hardware_gates.py --mode distributed

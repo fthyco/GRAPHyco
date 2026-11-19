@@ -2,7 +2,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 SCALE: int = 10000
 NODE_ID_PATTERN = re.compile('^[a-zA-Z0-9_-]+$')
 
@@ -100,9 +100,15 @@ class GraphState:
     phase: str = 'nascent'
     structural_debt: int = 0
     event_history: List[dict] = field(default_factory=list)
+    # Empty for legacy/manually-constructed graphs; included in serialization only
+    # when the extraction method is known.
+    provenance: Dict[str, object] = field(default_factory=dict)
 
     def copy(self) -> 'GraphState':
         return copy.deepcopy(self)
 
     def to_dict(self) -> dict:
-        return {'nodes': {nid: n.to_dict() for nid, n in sorted(self.nodes.items())}, 'edges': [e.to_dict() for e in sorted(self.edges, key=lambda e: (e.source, e.target, e.edge_type))], 'capacity_vector': self.capacity_vector.to_dict(), 'phase': self.phase, 'structural_debt': self.structural_debt, 'event_count': len(self.event_history)}
+        result = {'nodes': {nid: n.to_dict() for nid, n in sorted(self.nodes.items())}, 'edges': [e.to_dict() for e in sorted(self.edges, key=lambda e: (e.source, e.target, e.edge_type))], 'capacity_vector': self.capacity_vector.to_dict(), 'phase': self.phase, 'structural_debt': self.structural_debt, 'event_count': len(self.event_history)}
+        if self.provenance:
+            result['provenance'] = copy.deepcopy(self.provenance)
+        return result
