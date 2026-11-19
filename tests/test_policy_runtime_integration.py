@@ -71,3 +71,42 @@ def test_one_shot_accepts_policy_but_default_still_legacy():
     assert new_state.dynamic_evaluation["policy"] == policy.to_dict()
     assert "policy" not in old_state.dynamic_evaluation
     assert "coverage" not in old_state.dynamic_evaluation
+
+
+def test_visualizer_summary_propagates_undefined_policy_metrics():
+    from graphyco.core.primitives import GraphState, Node
+    from graphyco.observer.grad_eval import evaluate_dynamic_flow
+    from graphyco.observer.grad_observer import DynamicNodeRecord
+    from graphyco.visualizer.query import _build_summary
+
+    g = GraphState(nodes={"A": Node("A", "A", "hidden")})
+    missing = {"A": DynamicNodeRecord(node_id="A", node_type="call_module")}
+    report = evaluate_dynamic_flow(
+        g, missing, analysis_policy=AnalysisPolicy(
+            gradient_policy="observed_only",
+        ),
+    )
+    summary = _build_summary("Missing gradient", {}, report, missing)
+    assert summary["grad_bottleneck_gmax"] is None
+    assert summary["bottleneck_node"] is None
+    assert summary["spearman_act_grad"] is None
+    assert summary["mean_stability_cv"] is None
+    assert summary["mean_grad_flow"] is None
+
+
+def test_visualizer_summary_skips_missing_temporal_cv():
+    from graphyco.core.primitives import GraphState, Node
+    from graphyco.observer.grad_eval import evaluate_dynamic_flow
+    from graphyco.observer.grad_observer import DynamicNodeRecord
+    from graphyco.visualizer.query import _build_summary
+
+    g = GraphState(nodes={"A": Node("A", "A", "hidden")})
+    rec = DynamicNodeRecord(node_id="A", node_type="call_module")
+    report = evaluate_dynamic_flow(
+        g, {"A": rec},
+        trajectory=[{"A": rec}, {"A": rec}],
+        analysis_policy=AnalysisPolicy(gradient_policy="observed_only"),
+    )
+    assert report["temporal"]["A"]["cv"] is None
+    summary = _build_summary("Sparse trajectory", {}, report, {"A": rec})
+    assert summary["mean_stability_cv"] is None
