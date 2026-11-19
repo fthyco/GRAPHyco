@@ -5,7 +5,6 @@ New opt-in graph-theoretic references have separate names and tests.
 """
 from __future__ import annotations
 
-from itertools import combinations
 
 import pytest
 import torch
@@ -19,7 +18,6 @@ from graphyco.core.evaluation import (
     dead_ratio,
     structural_perturbation_resilience,
     critical_path_density,
-    perturbation_profile,
     evaluate,
 )
 from graphyco.core.metric_contracts import QUERY_METRIC_DEFINITIONS
