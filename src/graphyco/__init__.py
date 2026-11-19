@@ -23,7 +23,7 @@ def __getattr__(name: str):
             raise
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
-__version__ = "0.1.2"
+__version__ = "0.2.0"
 __name__ = "graphyco"
 
 __all__ = [
