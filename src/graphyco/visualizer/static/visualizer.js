@@ -1165,7 +1165,7 @@ function updateInspector(nid, neuronIdx = null) {
     : '—';
 
   const tStat = (dynEv.temporal && dynEv.temporal[nid]) ? dynEv.temporal[nid] : null;
-  document.getElementById('ins-cv').textContent = tStat ? `${tStat.cv.toFixed(4)} (${tStat.classification})` : '-';
+  document.getElementById('ins-cv').textContent = !tStat ? '-' : (tStat.cv !== null && tStat.cv !== undefined && Number.isFinite(tStat.cv) ? `${Number(tStat.cv).toFixed(4)} (${tStat.classification})` : `N/A (${tStat.classification || 'not_observed'})`);
 
   // Highlight selected element
   document.querySelectorAll('.node-group').forEach(ng => {
