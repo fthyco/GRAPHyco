@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, List
+from typing import Dict
 from .primitives import GraphState, SCALE, checked_add, checked_mul
 from .graph import compute_graph_density, compute_local_density, find_isolated_nodes, detect_critical_cycles, in_degree, out_degree
 
