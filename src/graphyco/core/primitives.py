@@ -2,7 +2,7 @@ from __future__ import annotations
 import copy
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 SCALE: int = 10000
 NODE_ID_PATTERN = re.compile('^[a-zA-Z0-9_-]+$')
 
