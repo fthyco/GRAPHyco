@@ -9,10 +9,10 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
-from torch.fx import GraphModule, symbolic_trace
+from torch.fx import symbolic_trace
 
 from ..core.evaluation import evaluate, perturbation_profile
-from ..core.primitives import Edge, GraphState, SCALE
+from ..core.primitives import GraphState
 from ..observer.grad_eval import evaluate_dynamic_flow
 from ..observer.analysis_policy import AnalysisPolicy, NodeIdentityRegistry
 from ..observer.grad_observer import (
@@ -20,7 +20,6 @@ from ..observer.grad_observer import (
     FXGradObserver,
     ModuleGradObserver,
     TensorStats,
-    compute_tensor_stats,
 )
 from .torch_bridge import module_to_graph, _fx_to_graph
 
