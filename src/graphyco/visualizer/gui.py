@@ -384,16 +384,19 @@ class VisualizerDesktopApp(QMainWindow):
         arch = archs[0]
         s = self.query_engine.get_summary(arch)
 
+        def display_optional_number(value):
+            return f"{value:.4f}" if isinstance(value, (int, float)) else "N/A"
+
         invariants_data = [
             ("Target Architecture", str(s.get("name", arch)), "Primary computational graph model"),
             ("Graph Density (D)", f"{s.get('density', 0.0):.4f}", "|E| / (|V|(|V|-1)) connectivity ratio"),
             ("Connectivity Coherence (C)", f"{s.get('coherence', 0.0):.4f}", "Conservation of incoming vs outgoing gradient flow"),
             ("Topological Bottleneck", f"{s.get('topological_bottleneck', 0.0):.4f}", "Peak betweenness centrality across DAG nodes"),
             ("Structural Resilience (R)", f"{s.get('resilience', 0.0):.4f}", "Fraction of downstream paths preserved under ablation"),
-            ("Dynamic Bottleneck (G_max)", f"{s.get('grad_bottleneck_gmax', 0.0):.4f}", "Peak gradient accumulation concentration factor"),
+            ("Dynamic Bottleneck (G_max)", display_optional_number(s.get('grad_bottleneck_gmax', 0.0)), "Peak gradient accumulation concentration factor"),
             ("Primary Bottleneck Node", str(s.get("bottleneck_node", "None")), "Layer exhibiting maximal gradient accumulation"),
-            ("Spearman Rank (rho_AG)", f"{s.get('spearman_act_grad', 0.0):.4f}", "Rank correlation between activations and gradients"),
-            ("Stability CV", f"{s.get('mean_stability_cv', 0.0):.4f}", "Temporal coefficient of variation across recorded steps"),
+            ("Spearman Rank (rho_AG)", display_optional_number(s.get('spearman_act_grad', 0.0)), "Rank correlation between activations and gradients"),
+            ("Stability CV", display_optional_number(s.get('mean_stability_cv', 0.0)), "Temporal coefficient of variation across recorded steps"),
         ]
 
         self.invariants_table.setRowCount(len(invariants_data))
