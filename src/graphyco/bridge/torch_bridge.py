@@ -1,11 +1,10 @@
 from __future__ import annotations
 import re
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set
 import torch
 import torch.nn as nn
 from torch.fx import symbolic_trace, Graph, GraphModule, Node as FxNode
 from ..core.primitives import Edge, GraphState, Node, CapacityVector, DomainConstants
-from ..core.graph import compute_graph_density, compute_local_density
 from ..core.evaluation import evaluate
 _ID_CLEAN = re.compile('[^a-zA-Z0-9_-]')
 
