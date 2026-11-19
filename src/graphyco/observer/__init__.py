@@ -8,6 +8,12 @@ from .grad_observer import (
     FXGradObserver,
     ModuleGradObserver,
 )
+from .analysis_policy import (
+    NodeIdentity,
+    NodeIdentityRegistry,
+    AnalysisPolicy,
+    compare_analysis_policies,
+)
 from .grad_eval import (
     EdgeAttenuation,
     compute_gradient_attenuation,
@@ -25,6 +31,10 @@ from .grad_eval import (
 )
 
 __all__ = [
+    "NodeIdentity",
+    "NodeIdentityRegistry",
+    "AnalysisPolicy",
+    "compare_analysis_policies",
     "TensorStats",
     "compute_tensor_stats",
     "EdgeAutogradHook",
