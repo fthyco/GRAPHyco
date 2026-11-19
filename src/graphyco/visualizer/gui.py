@@ -6,21 +6,21 @@ from __future__ import annotations
 import json
 import os
 import sys
-from typing import Any, Dict, Optional, Union, Callable, Tuple
+from typing import Any, Dict, Optional, Union, Callable
+
+import torch
 
 from .query import extract_benchmark_json, QueryEngine
 from PySide6.QtCore import Qt, QTimer, QUrl
-from PySide6.QtGui import QAction, QColor, QFont, QIcon
+from PySide6.QtGui import QAction, QColor, QFont
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QStatusBar,
     QTableWidget,
     QTableWidgetItem,
@@ -39,7 +39,6 @@ except ImportError:
     HAS_WEBENGINE = False
 
 from .diagnostics import GradientHealthStatus, LiveTrainingDiagnostics
-from .query import QueryEngine
 from .renderer import Renderer
 
 
@@ -547,12 +546,12 @@ def launch_app(
         try:
             
             from PySide6.QtWidgets import QApplication
-            import sys
             app = QApplication.instance() or QApplication(sys.argv)
-            window = launch_desktop_app(data=data)
+            _window = launch_desktop_app(data=data)
             app.exec()
         except ImportError:
-            import tempfile, webbrowser
+            import tempfile
+            import webbrowser
             from .renderer import Renderer
             if isinstance(data, str) and data.endswith(".json"):
                 with open(data, "r", encoding="utf-8") as f:
