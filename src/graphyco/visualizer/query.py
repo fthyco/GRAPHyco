@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
-from scipy.stats import pearsonr, spearmanr
 from typing import Callable, Tuple
 from ..bridge.grad_bridge import DynamicExecutionBridge, DynamicGraphState, LiveTrainingMonitor
 from ..core.metric_contracts import QUERY_METRIC_DEFINITIONS
