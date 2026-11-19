@@ -7,7 +7,6 @@ import json
 import math
 import platform
 import resource
-import statistics
 import subprocess
 import sys
 import time
