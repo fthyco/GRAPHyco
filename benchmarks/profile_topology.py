@@ -19,7 +19,7 @@ from pathlib import Path
 from graphyco.core.evaluation import evaluate, perturbation_profile
 from graphyco.core.graph import compute_local_density
 from graphyco.core.primitives import GraphState, SCALE, checked_add, checked_mul
-from benchmarks.graph_scaling import graph
+from graph_scaling import graph
 
 
 def original_profile(state: GraphState) -> dict:
