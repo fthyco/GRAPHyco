@@ -148,7 +148,7 @@ def test_executed_scope_requires_positive_evidence_not_absence_inference():
         analysis_policy=policy(graph_scope="executed"), identity_registry=registry,
     )
     assert set(report["observations"]) == {"A", "B"}
-    assert report["observations"]["C"] if False else True
+    assert "C" not in report["observations"]
     assert report["observations"]["B"]["execution"] == "executed"
 
 
@@ -229,3 +229,33 @@ def test_invalid_policy_rejected_explicitly():
         AnalysisPolicy(gradient_policy="ignore")
     with pytest.raises(ValueError, match="graph_scope"):
         AnalysisPolicy(graph_scope="mystery")
+
+
+def test_registry_history_is_bounded_and_snapshots_do_not_change():
+    registry = NodeIdentityRegistry(max_events=2)
+    registry.register(NodeIdentity("A", "hidden", physical_index=0))
+    before = registry.snapshot()
+    registry.transition("A", lifecycle="inactive")
+    registry.transition("A", execution="not_executed")
+    assert len(registry.history()) == 2
+    assert [ev["version"] for ev in registry.history()] == [2, 3]
+    assert before["A"].lifecycle == "active"
+    assert registry.snapshot()["A"].lifecycle == "inactive"
+    registry.history()[0]["current"]["lifecycle"] = "externally_modified"
+    assert registry.history()[0]["current"]["lifecycle"] == "inactive"
+
+
+def test_contradictory_model_lifecycle_is_reported_not_silently_fixed():
+    registry = NodeIdentityRegistry()
+    registry.register(NodeIdentity(
+        "A", "hidden", physical_index=0,
+        lifecycle="inactive", execution="not_executed",
+    ))
+    report = evaluate_dynamic_flow(
+        graph("A"), {"A": record("A", 1.0, 0.6)},
+        analysis_policy=policy(), identity_registry=registry,
+    )
+    conflicts = report["coverage"]["status_conflicts"]["A"]
+    assert "activation_observed_but_declared_not_executed" in conflicts
+    assert "gradient_observed_but_declared_inactive" in conflicts
+    assert report["bottleneck"]["max_concentration"] is None
