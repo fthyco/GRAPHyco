@@ -6,16 +6,16 @@ Scope: tested source behavior. **Passed tests do not establish universal PyTorch
 
 | Area | Evidence | Result |
 |---|---|---|
-| Python 3.9–3.13 | [Package CI](https://github.com/fthyco/GRAPHyco/actions/runs/44439783442) | 138 passed, 4 skipped per version |
+| Python 3.9–3.13 | [Package CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378429) | 141 passed, 4 skipped per version |
 | GUI security | Same CI | 3 passed |
-| Ruff, Bandit, packaging | [Quality CI](https://github.com/fthyco/GRAPHyco/actions/runs/44439788533) | Passed |
+| Ruff, Bandit, packaging | [Quality CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378379) | Passed |
 | CPU Inductor | Quality CI | Output-boundary telemetry, training parity passed; internal fused operations not guaranteed |
 | Gloo DDP | Quality CI | Two-process training and all-reduce parity passed |
-| Static topology | [Stress CI](https://github.com/fthyco/GRAPHyco/actions/runs/44439788576) | 600 deterministic randomized multigraphs plus edge cases matched the legacy formulas |
+| Static topology | [Stress CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378476) | 600 deterministic randomized multigraphs plus edge cases matched the legacy formulas |
 | Long-run telemetry | Stress CI | 2,000 training steps, 250 observed, 16 retained |
 | ResNet50 / TransformerEncoder | Stress CI | 32 / 64 CPU training steps, gradient and parameter parity passed |
 
-CI results above correspond to source commit `0179b85568fd95df5bcecafdb3e4e3c01c7b3558`. Documentation-only changes require their own final-head checks.
+CI links identify the tested repository revision and its machine-generated evidence.
 
 ## CPU performance
 
