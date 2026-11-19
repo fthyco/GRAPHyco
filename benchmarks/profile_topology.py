@@ -18,7 +18,7 @@ from pathlib import Path
 
 from graphyco.core.evaluation import evaluate, perturbation_profile
 from graphyco.core.graph import compute_local_density
-from graphyco.core.primitives import GraphState, SCALE, checked_add, checked_mul
+from graphyco.core.primitives import GraphState, SCALE, checked_add
 from graph_scaling import graph
 
 
