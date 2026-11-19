@@ -8,7 +8,6 @@ on CPU-only CI. This suite does not certify production-scale/multi-rank DDP.
 from __future__ import annotations
 
 import copy
-import os
 import pathlib
 
 import pytest
