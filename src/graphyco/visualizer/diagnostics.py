@@ -9,7 +9,6 @@ from typing import Any, Callable, Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from ..bridge.grad_bridge import DynamicExecutionBridge
 
 
 class GradientHealthStatus:
