@@ -56,12 +56,21 @@ jobs:
       - name: Calibrated CPU monitoring overhead and RSS
         run: |
           python benchmarks/perf_matrix.py --steps 45 --warmup 8 --output /tmp/graphyco-perf-matrix.json
+      - name: Architecture families (MLP / residual CNN / attention) parity
+        run: python -m pytest -q tests/test_model_family_perf.py
+      - name: Architecture-family CPU timing and peak RSS
+        run: python benchmarks/model_families.py --steps 12 --warmup 4 --output /tmp/graphyco-model-families.json
+      - name: Graph metric scalability / process RSS
+        run: python benchmarks/graph_scaling.py --output /tmp/graphyco-graph-scaling.json
       - name: Publish performance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cpu-performance-audit
-          path: /tmp/graphyco-perf-matrix.json
+          path: |
+            /tmp/graphyco-perf-matrix.json
+            /tmp/graphyco-model-families.json
+            /tmp/graphyco-graph-scaling.json
           if-no-files-found: warn
 
 # Physical CUDA validation is deliberately separate; GitHub hosted CPU jobs
