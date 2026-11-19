@@ -1,9 +1,6 @@
 # Stage 10 — Performance optimization and stress validation
 
-Status: **Draft; not merged or released**. Stacked on PR #9, which itself is
-stacked on the previous GRAPHyco audit PRs. This stage addresses CPU graph
-metric scalability and longer runtime telemetry tests; it is **not** GPU
-certification.
+Status: merged into `main` through [PR #10](https://github.com/fthyco/GRAPHyco/pull/10) as part of the 0.2.0 source tree. This stage addresses CPU graph-metric scalability and longer runtime telemetry tests; it is **not** GPU certification.
 
 ## 1. Root cause and mathematical preservation
 
@@ -107,5 +104,4 @@ remain mandatory. Separate physical GPU AMP/Inductor/NCCL tests remain
 - Larger models were monitored for dozens, not thousands, of steps. The
   2,000-step plateau test uses a smaller MLP; no extrapolation is claimed.
 
-**No merge until the code-review and required hardware/performance policy
-decisions are satisfied.**
+Production GPU certification and performance acceptance remain outstanding; this source merge does not establish them.
