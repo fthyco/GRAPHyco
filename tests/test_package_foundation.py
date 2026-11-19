@@ -20,6 +20,7 @@ from graphyco.visualizer.renderer import Renderer
 
 
 def test_declared_runtime_dependencies_include_scipy() -> None:
+    assert graphyco.__name__ == "graphyco"
     requirements = metadata.requires("graphyco") or []
     assert any(req.lower().startswith("scipy") for req in requirements)
 
