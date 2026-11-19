@@ -529,18 +529,8 @@ def launch_app(
         open_browser: If True, opens dashboard.
     """
     if data is None:
-        cand1 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dynamic_flow_benchmark.json")
-        cand2 = os.path.join(os.getcwd(), "dynamic_flow_benchmark.json")
-        cand3 = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "validation", "dynamic_flow_benchmark.json")
-        cand4 = os.path.join(os.getcwd(), "validation", "dynamic_flow_benchmark.json")
-        for cand in (cand3, cand4, cand1, cand2):
-            if os.path.exists(cand):
-                data = os.path.abspath(cand)
-                break
-        if data is None:
-            # Build canonical benchmark on the fly
-            print("[Visualizer] dynamic_flow_benchmark.json not found. Extracting canonical benchmark data...")
-            data = extract_benchmark_json("all")
+        default_json = os.path.join(os.getcwd(), "dynamic_flow_benchmark.json")
+        data = default_json if os.path.isfile(default_json) else extract_benchmark_json("all")
 
     if open_browser:
         try:
