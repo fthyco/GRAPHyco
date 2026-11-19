@@ -83,6 +83,8 @@ def check_family(family: str, steps: int) -> dict:
     plain_seconds = observed_seconds = 0.0
     observed_node_counts = []
     gradient_node_counts = []
+    rss_checkpoints = {}
+    checkpoint_steps = {max(1, steps // 4), max(1, steps // 2), steps}
     try:
         for step in range(steps):
             baseline_opt.zero_grad(set_to_none=True)
@@ -123,8 +125,21 @@ def check_family(family: str, steps: int) -> dict:
             ))
             assert len(monitor.trajectory) <= 3
             assert all(torch.isfinite(p).all() for p in monitored_model.parameters())
+            if step + 1 in checkpoint_steps:
+                gc.collect()
+                rss_checkpoints[str(step + 1)] = _rss_mib()
 
+        assert min(gradient_node_counts) > 0, "must capture backward gradients"
         gc.collect()
+        plateau_growth = (
+            rss_checkpoints[str(steps)]
+            - rss_checkpoints[str(max(1, steps // 4))]
+        )
+        assert plateau_growth < 256.0, (
+            "process RSS continues to grow after warmup: {:.1f} MiB".format(
+                plateau_growth
+            )
+        )
         return {
             "family": family,
             "steps": steps,
@@ -138,6 +153,8 @@ def check_family(family: str, steps: int) -> dict:
             "retained_trajectory": len(monitor.trajectory),
             "rss_start_mib": rss_before,
             "rss_end_mib": _rss_mib(),
+            "rss_checkpoints_mib": rss_checkpoints,
+            "rss_growth_since_quarter_mib": plateau_growth,
             "peak_process_rss_mib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
             "status": "passed",
         }
