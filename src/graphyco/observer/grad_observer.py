@@ -379,6 +379,10 @@ class ModuleGradObserver:
     install register_full_backward_hook, avoiding PyTorch's extra input/output
     views and the associated no-input-grad warning. Hooks capture the most
     recent invocation for a reused module name (not the full call history).
+
+    For a torch.compile OptimizedModule, the top-level output boundary is
+    observed explicitly. Inductor may fuse and bypass child module hooks, so
+    child-node telemetry cannot be asserted without corresponding hook data.
     """
 
     def __init__(self, model: nn.Module, stats_backend: str = "cpu"):
@@ -401,8 +405,16 @@ class ModuleGradObserver:
         for name, module in self.model.named_modules():
             if not name:
                 name = "root"
-            # Only monitor leaf modules
-            if len(list(module.children())) == 0:
+            # Normal modules are monitored at leaves. A torch.compile wrapper
+            # may execute fused kernels without invoking any original leaf
+            # module Python hooks. Retain an honest, model-level measurement
+            # by observing the *actual wrapper output* as root instead.
+            compiled_boundary = (
+                name == "root"
+                and hasattr(module, "_orig_mod")
+                and hasattr(module, "_torchdynamo_orig_callable")
+            )
+            if len(list(module.children())) == 0 or compiled_boundary:
                 self.module_types[name] = type(module).__name__
                 self.handles.append(
                     module.register_forward_hook(self._make_fwd_hook(name))
