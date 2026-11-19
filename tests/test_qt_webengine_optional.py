@@ -7,9 +7,9 @@ import pytest
 
 qt_web = pytest.importorskip("PySide6.QtWebEngineWidgets")
 pytest.importorskip("PySide6.QtWebEngineCore")
-from PySide6.QtCore import QUrl, QEventLoop, QTimer
-from PySide6.QtWidgets import QApplication
-from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+from PySide6.QtCore import QUrl, QEventLoop, QTimer  # noqa: E402 - Qt importorskip above is intentional
+from PySide6.QtWidgets import QApplication  # noqa: E402 - optional Qt
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings  # noqa: E402 - optional Qt
 
 
 def test_gui_does_not_change_sandbox_environment_and_blocks_navigation():
@@ -21,7 +21,7 @@ def test_gui_does_not_change_sandbox_environment_and_blocks_navigation():
 
     after = {key: os.environ.get(key) for key in before}
     assert before == after
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     page = gui._RestrictedGraphPage()
     click = QWebEnginePage.NavigationType.NavigationTypeLinkClicked
     for url in (
@@ -37,7 +37,7 @@ def test_gui_does_not_change_sandbox_environment_and_blocks_navigation():
 
 def test_desktop_web_view_uses_local_resource_restrictions():
     from graphyco.visualizer.gui import VisualizerDesktopApp
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     window = VisualizerDesktopApp()
     if window.web_view is None:
         pytest.skip("PySide6.QtWebEngineWidgets unavailable")
@@ -58,7 +58,7 @@ def test_qt_html_data_embedding_stays_parsed_not_executed():
     import json
     from graphyco.visualizer.gui import VisualizerDesktopApp
 
-    app = QApplication.instance() or QApplication([])
+    _app = QApplication.instance() or QApplication([])
     window = VisualizerDesktopApp()
     if window.web_view is None:
         pytest.skip("No installed QtWebEngine")
