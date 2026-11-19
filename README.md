@@ -27,6 +27,7 @@ pip install graphyco[gui]
 > **Metric meanings and mathematical validation**: [docs/METRIC_CONTRACTS.md](docs/METRIC_CONTRACTS.md). Existing 'bottleneck' and 'resilience' summary values are heuristic structural/gradient indicators, not causal neural-network bottleneck or measured ablation effects.  
 > **Graph fidelity, hierarchy fallback, and provenance**: [docs/GRAPH_FIDELITY.md](docs/GRAPH_FIDELITY.md).  
 > **Gradient monitoring verification and limitations**: [docs/GRADIENT_MONITORING_VERIFICATION.md](docs/GRADIENT_MONITORING_VERIFICATION.md).  
+> **Stable identity, missing-gradient semantics and configurable policies (opt-in)**: [docs/IDENTITY_OBSERVATION_POLICIES.md](docs/IDENTITY_OBSERVATION_POLICIES.md).  
 > **Security, profiling and wheel/sdist release gates**: [docs/SECURITY_PERFORMANCE_DISTRIBUTION.md](docs/SECURITY_PERFORMANCE_DISTRIBUTION.md).
 
 ---
