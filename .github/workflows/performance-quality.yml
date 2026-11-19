@@ -49,8 +49,10 @@ jobs:
         run: python -m pip check
       - name: Long-run bounded telemetry and correctness gates
         run: python -m pytest -q tests/test_performance_regression.py
-      - name: Multirank Gloo and CPU Inductor compatibility
+      - name: Actual CPU Inductor compile and training parity
         run: python -m pytest -q tests/test_multirank_inductor_cpu.py
+      - name: Real two-process Gloo distributed training parity
+        run: python -m torch.distributed.run --standalone --nnodes=1 --nproc-per-node=2 benchmarks/ddp_parity.py
       - name: Calibrated CPU monitoring overhead and RSS
         run: |
           python benchmarks/perf_matrix.py --steps 45 --warmup 8 --output /tmp/graphyco-perf-matrix.json
