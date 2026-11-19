@@ -1,0 +1,103 @@
+name: Profiling and large-model stress gates
+
+on:
+  push:
+    branches: ["audit/profile-optimize-stress"]
+  pull_request:
+    branches: ["audit/**", main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  topology-profiler:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch
+        run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install package and tests
+        run: python -m pip install -e ".[dev]"
+      - name: Exact legacy-oracle parity on randomized multigraphs
+        run: python -m pytest -q tests/test_topology_fast_oracle.py
+      - name: Profile original edge scans vs indexed topology
+        run: python benchmarks/profile_topology.py --sizes 128 512 1024 --rounds 3 --output /tmp/topology-profile.json
+      - name: Optimized static graph scaling and memory
+        run: python benchmarks/graph_scaling.py --sizes 32 128 512 1024 --repetitions 3 --output /tmp/graph-scaling.json
+      - name: Publish exact measured profiler outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graph-topology-profiler
+          path: |
+            /tmp/topology-profile.json
+            /tmp/graph-scaling.json
+          if-no-files-found: warn
+
+  thousand-step-monitor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install CPU PyTorch and project
+        run: |
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -e ".[dev]"
+      - name: 2000 training steps and bounded telemetry / RSS
+        run: python benchmarks/long_run_memory.py --steps 2000 --interval 8 --max-history 16 --output /tmp/longrun-memory.json
+      - name: Publish memory checkpoints
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: training-memory-plateau
+          path: /tmp/longrun-memory.json
+          if-no-files-found: warn
+
+  large-models:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OMP_NUM_THREADS: "1"
+      MKL_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install compatible CPU Torch and torchvision
+        run: |
+          python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+      - name: Install package and dependencies
+        run: |
+          python -m pip install -e ".[dev]"
+          python -m pip check
+      - name: Actual ResNet50 train parity, hooks and memory
+        run: python benchmarks/large_model_stress.py --family resnet50 --steps 4 --output /tmp/resnet50-stress.json
+      - name: Actual eight-layer Transformer train parity, hooks and memory
+        run: python benchmarks/large_model_stress.py --family transformer8 --steps 4 --output /tmp/transformer8-stress.json
+      - name: Publish resource evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: resnet50-transformer-stress
+          path: |
+            /tmp/resnet50-stress.json
+            /tmp/transformer8-stress.json
+          if-no-files-found: warn
+
+# These are CPU gates. CUDA AMP, Inductor GPU and multi-GPU NCCL are
+# separately blocked on the physical hardware workflow in PR #9.
