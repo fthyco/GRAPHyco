@@ -1,4 +1,4 @@
-# Stage 7 — Telemetry Integrity Review (Pre-merge)
+# Stage 7 — Telemetry Integrity Review
 
 Scope: targeted independent code review of the stacked GRAPHyco change set after PR #6. This is not a comprehensive independent security audit or a substitute for human reviewer sign-off.
 
@@ -31,6 +31,6 @@ New code detaches each parameter-gradient tensor before the float64 CPU copy/con
 - FX trace instrumentation inserts identity-view autograd nodes and can differ from custom Python forwards, in-place operators, wrappers and some stateful models.
 - Legacy analysis treats missing/unknown gradients as measured zero in several public metrics (documented historical metric semantics). This can create misleading vanishing-gradient interpretations; changing it requires a deliberate metric-contract version/migration, not an undocumented patch.
 - Stage 6 only tests single-rank Gloo DDP and torch.compile eager backend. GPU AMP, multi-rank NCCL and compiled inductor remain unverified.
-- The pull-request stack requires separate human approval and integration in sequence; do not interpret passing CI or this review as permission to publish to PyPI or merge into main.
+- This audit was included in the 0.2.0 source merge; its CPU CI results do not establish physical GPU compatibility or confirm PyPI publication.
 
 Reference code: src/graphyco/bridge/grad_bridge.py, src/graphyco/observer/grad_observer.py, tests/test_telemetry_integrity.py.
