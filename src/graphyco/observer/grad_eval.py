@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 from scipy.stats import pearsonr, spearmanr
 
-from ..core.primitives import Edge, GraphState, SCALE, checked_mul
+from ..core.primitives import Edge, GraphState, SCALE
 from .grad_observer import DynamicNodeRecord, TensorStats
+
+if TYPE_CHECKING:
+    from .analysis_policy import AnalysisPolicy, NodeIdentityRegistry
 
 
 # ══════════════════════════════════════════════════════════════
