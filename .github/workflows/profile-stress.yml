@@ -86,9 +86,9 @@ jobs:
           python -m pip install -e ".[dev]"
           python -m pip check
       - name: Actual ResNet50 train parity, hooks and memory
-        run: python benchmarks/large_model_stress.py --family resnet50 --steps 4 --output /tmp/resnet50-stress.json
+        run: python benchmarks/large_model_stress.py --family resnet50 --steps 32 --output /tmp/resnet50-stress.json
       - name: Actual eight-layer Transformer train parity, hooks and memory
-        run: python benchmarks/large_model_stress.py --family transformer8 --steps 4 --output /tmp/transformer8-stress.json
+        run: python benchmarks/large_model_stress.py --family transformer8 --steps 64 --output /tmp/transformer8-stress.json
       - name: Publish resource evidence
         if: always()
         uses: actions/upload-artifact@v4
