@@ -28,4 +28,4 @@ The manual workflow `.github/workflows/physical-gpu-gates.yml` requires labeled 
 
 Record GPU model, driver, CUDA version, PyTorch version, exact Git SHA, raw test results, and memory/latency artifacts. Mark each gate passed only after it runs on the required hardware.
 
-**No merge under the current GPU-required release policy until the required hardware checks pass.**
+**The source was merged without completing these GPU gates. CUDA/GPU compatibility must remain unverified until the required hardware checks pass.**

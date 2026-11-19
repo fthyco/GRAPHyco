@@ -25,28 +25,9 @@ class QueryEngine:
         steps: int = 10,
         arch_name: Optional[str] = None,
     ):
-        if isinstance(data, str) and (data.endswith(".json") or os.path.exists(data)):
-            if not os.path.exists(data):
-                pkg_dir = os.path.dirname(os.path.abspath(__file__))
-                cands = [
-                    os.path.join(os.getcwd(), data),
-                    os.path.join(os.getcwd(), "notebooks", "tutorials", os.path.basename(data)),
-                    os.path.join(os.getcwd(), "validation", os.path.basename(data)),
-                    os.path.join(os.getcwd(), os.path.basename(data)),
-                    os.path.join(pkg_dir, "..", "..", "..", "notebooks", "tutorials", os.path.basename(data)),
-                    os.path.join(pkg_dir, "..", "..", "..", "validation", os.path.basename(data)),
-                    os.path.join(pkg_dir, "..", "..", "validation", os.path.basename(data)),
-                    os.path.join(pkg_dir, "..", "validation", os.path.basename(data)),
-                ]
-                found = None
-                for c in cands:
-                    if os.path.exists(c):
-                        found = os.path.abspath(c)
-                        break
-                if found:
-                    data = found
-                else:
-                    raise FileNotFoundError(f"Benchmark JSON file not found: {data}")
+        if isinstance(data, str) and (data.endswith(".json") or os.path.isfile(data)):
+            if not os.path.isfile(data):
+                raise FileNotFoundError(f"Benchmark JSON file not found: {data}")
             with open(data, "r", encoding="utf-8") as f:
                 self._data: Dict[str, Any] = json.load(f)
         elif isinstance(data, dict):

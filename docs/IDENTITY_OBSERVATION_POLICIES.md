@@ -1,6 +1,6 @@
 # Stable node identity and gradient-observation policies
 
-Stage 8 implementation, stacked on [PR #7](https://github.com/fthyco/GRAPHyco/pull/7).
+Stage 8 implementation, included in the 0.2.0 source merge via [PR #10](https://github.com/fthyco/GRAPHyco/pull/10).
 
 ## Contract
 

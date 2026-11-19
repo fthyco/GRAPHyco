@@ -48,3 +48,33 @@ def test_markdown_local_links_resolve():
             if not (document.parent / target).exists():
                 missing.append((str(document.relative_to(ROOT)), target))
     assert not missing, missing
+
+
+def test_new_tests_are_not_ignored_by_gitignore():
+    patterns = {
+        line.strip()
+        for line in (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert "tests/" not in patterns
+    assert "**/tests/" not in patterns
+
+
+def test_json_paths_are_explicit_not_discovered_from_removed_notebooks(tmp_path, monkeypatch):
+    import json
+
+    import pytest
+    from graphyco.visualizer.query import QueryEngine
+
+    payload = {"architectures": {"Sample": {"summary": {}}}}
+    legacy_dir = tmp_path / "notebooks" / "tutorials"
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "example.json"
+    legacy_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(FileNotFoundError, match="Benchmark JSON file not found"):
+        QueryEngine("example.json")
+
+    engine = QueryEngine(str(legacy_file))
+    assert engine.default_arch == "Sample"

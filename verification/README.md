@@ -6,12 +6,12 @@ Scope: tested source behavior. **Passed tests do not establish universal PyTorch
 
 | Area | Evidence | Result |
 |---|---|---|
-| Python 3.9–3.13 | [Package CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378429) | 141 passed, 4 skipped per version |
+| Python 3.9–3.13 | [0.2.0 pre-merge Package CI](https://github.com/fthyco/GRAPHyco/actions/runs/44454051826) | 141 passed, 4 skipped per version |
 | GUI security | Same CI | 3 passed |
-| Ruff, Bandit, packaging | [Quality CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378379) | Passed |
+| Ruff, Bandit, packaging | [0.2.0 pre-merge Quality CI](https://github.com/fthyco/GRAPHyco/actions/runs/44454051814) | Passed |
 | CPU Inductor | Quality CI | Output-boundary telemetry, training parity passed; internal fused operations not guaranteed |
 | Gloo DDP | Quality CI | Two-process training and all-reduce parity passed |
-| Static topology | [Stress CI](https://github.com/fthyco/GRAPHyco/actions/runs/44442378476) | 600 deterministic randomized multigraphs plus edge cases matched the legacy formulas |
+| Static topology | [0.2.0 pre-merge Stress CI](https://github.com/fthyco/GRAPHyco/actions/runs/44454051860) | 600 deterministic randomized multigraphs plus edge cases matched the legacy formulas |
 | Long-run telemetry | Stress CI | 2,000 training steps, 250 observed, 16 retained |
 | ResNet50 / TransformerEncoder | Stress CI | 32 / 64 CPU training steps, gradient and parameter parity passed |
 
@@ -46,5 +46,4 @@ Benchmarks are runner-specific and do not establish production latency limits. S
 - [Telemetry integrity](TELEMETRY_INTEGRITY_REVIEW.md)
 - [Security and distribution](SECURITY_PERFORMANCE_DISTRIBUTION.md)
 - [Reliability audit](RELIABILITY_AUDIT_2026-11-18.md)
-- [Release integration gates](RELEASE_INTEGRATION_GATE_2026-11-18.md)
 - [Historical empirical results — not revalidated](HISTORICAL_EMPIRICAL_RESULTS.md)

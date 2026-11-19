@@ -1,6 +1,6 @@
 # Stage 5 — Security, Performance and Distribution Audit
 
-Date: 2026-11-18. Stacked on the Stage 4 audit branch. This document describes tested fixes and limitations. It is not a third-party security audit, an unconditional claim of training parity, or a performance SLA.
+Stage 5 audit evidence recorded on 2026-11-18; the changes were subsequently included in the 0.2.0 source merge. This document describes tested fixes and limitations. It is not a third-party security audit, an unconditional claim of training parity, or a performance SLA.
 
 ## Renderer and browser security
 
@@ -40,7 +40,7 @@ Future optimization needs production-size model profiling, calibrated GPU benchm
 
 The CI builds both wheels and source distributions, verifies packaged metadata and visualizer HTML/CSS/JS assets, installs both from outside the repository, runs an installed headless CLI query, and tests core behavior on Python 3.11/3.12 without PySide6. A separate GUI job verifies Qt WebEngine restrictions with PySide6 installed.
 
-The project version was not bumped and nothing was published to PyPI. Actual release requires reviewed and merged stacked PRs, dependency/platform matrix review, version/release notes, staging, and a wider security assessment.
+At the time of this Stage 5 audit, the version was unchanged. The changes were later consolidated into `main` with version 0.2.0 and release notes. PyPI publication and physical GPU certification are separate from this audit and are not verified here.
 
 ## Compatibility and remaining limits
 
