@@ -1,6 +1,4 @@
 from __future__ import annotations
-import re
-from typing import List
 from .primitives import GraphState, NODE_ID_PATTERN
 from .graph import detect_critical_cycles
 
