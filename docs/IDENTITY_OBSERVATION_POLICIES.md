@@ -62,70 +62,7 @@ graph nodes lacking DynamicNodeRecords and therefore can differ from an old
 report made from only the observed record map; compare on the same population
 and note that difference.
 
-## Example
-
-```python
-from graphyco.observer import (
-    AnalysisPolicy, NodeIdentity, NodeIdentityRegistry,
-    evaluate_dynamic_flow, compare_analysis_policies,
-)
-
-identities = NodeIdentityRegistry(max_events=256)
-identities.register(NodeIdentity("layer0/neuron-a", "layer0", physical_index=3))
-identities.transition(
-    "layer0/neuron-a", lifecycle="inactive", execution="not_executed"
-)
-# An entirely new neuron may now occupy physical slot 3:
-identities.register(NodeIdentity("layer0/neuron-b", "layer0", physical_index=3))
-
-reports = compare_analysis_policies(
-    graph_state, node_records,
-    {
-        "legacy": AnalysisPolicy(
-            graph_scope="full", gradient_policy="legacy_zero_fill"
-        ),
-        "research": AnalysisPolicy(
-            graph_scope="full", gradient_policy="observed_only"
-        ),
-    },
-    identity_registry=identities,
-)
-print(reports["research"]["coverage"])
-```
-
-The example assumes `graph_state` and `node_records` are already available
-and keyed by the same **stable identities**. An integration adapter must map FX
-or module node names to these stable IDs explicitly; this stage does not
-automatically remap existing observer output.
-
-## Monitoring entry points
-
-The same optional `analysis_policy` and `identity_registry` parameters are
-accepted by `DynamicExecutionBridge(...)`, `LiveTrainingMonitor(...)`, and
-the one-shot `monitor_model(...)` API. They are forwarded to
-`evaluate_dynamic_flow` for each captured step. Without these optional
-parameters, all three retain their historical metric schema and behavior.
-
-```python
-from graphyco.observer import AnalysisPolicy
-from graphyco import LiveTrainingMonitor
-
-policy = AnalysisPolicy(
-    graph_scope="full", gradient_policy="observed_only"
-)
-monitor = LiveTrainingMonitor(model, mode="module", analysis_policy=policy)
-try:
-    # use monitor.observe(step) around an ordinary caller training step
-    ...
-finally:
-    monitor.close()
-```
-
-High-level hooks do not automatically infer stable neuron identity. For an
-adaptive-width model, the caller must populate/transition its registry with
-true model events, and supply matching stable IDs in graph and telemetry
-records. Otherwise the policy is still useful for operation/module-level
-missing-gradient semantics.
+Usage examples: [Training monitoring](../usage/MONITORING.md).
 
 ## Denominators and limitations
 
