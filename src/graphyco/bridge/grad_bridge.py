@@ -14,6 +14,7 @@ from torch.fx import GraphModule, symbolic_trace
 from ..core.evaluation import evaluate, perturbation_profile
 from ..core.primitives import Edge, GraphState, SCALE
 from ..observer.grad_eval import evaluate_dynamic_flow
+from ..observer.analysis_policy import AnalysisPolicy, NodeIdentityRegistry
 from ..observer.grad_observer import (
     DynamicNodeRecord,
     FXGradObserver,
@@ -124,6 +125,8 @@ class DynamicExecutionBridge:
         strict_trace: bool = False,
         max_history_steps: Optional[int] = 128,
         stats_backend: str = "cpu",
+        analysis_policy: Optional[AnalysisPolicy] = None,
+        identity_registry: Optional[NodeIdentityRegistry] = None,
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -134,6 +137,8 @@ class DynamicExecutionBridge:
         if stats_backend not in ("cpu", "device"):
             raise ValueError("stats_backend must be 'cpu' or 'device'")
         self.stats_backend = stats_backend
+        self.analysis_policy = analysis_policy
+        self.identity_registry = identity_registry
         if max_history_steps is not None and max_history_steps < 1:
             raise ValueError("max_history_steps must be >= 1 or None")
         self.max_history_steps = max_history_steps
@@ -268,6 +273,8 @@ class DynamicExecutionBridge:
                 edge_records=edge_records,
                 static_perturbation_profile=self.static_profile,
                 trajectory=trajectory_records,
+                analysis_policy=self.analysis_policy,
+                identity_registry=self.identity_registry,
             )
 
             state = DynamicGraphState(
@@ -336,9 +343,14 @@ def monitor_model(
     loss_fn: Optional[Callable] = None,
     mode: str = "trace",
     concrete_args: Optional[Dict] = None,
+    analysis_policy: Optional[AnalysisPolicy] = None,
+    identity_registry: Optional[NodeIdentityRegistry] = None,
 ) -> DynamicGraphState:
-    """One-line convenience function to monitor a forward and backward pass on a PyTorch model."""
-    bridge = DynamicExecutionBridge(model, mode=mode, concrete_args=concrete_args)
+    """One-shot monitoring with an optional explicit analysis interpretation."""
+    bridge = DynamicExecutionBridge(
+        model, mode=mode, concrete_args=concrete_args,
+        analysis_policy=analysis_policy, identity_registry=identity_registry,
+    )
     try:
         return bridge.step(inputs=inputs, loss_fn=loss_fn)
     finally:
@@ -385,6 +397,8 @@ class LiveTrainingMonitor:
         strict_trace: bool = False,
         max_history_steps: Optional[int] = 128,
         stats_backend: str = "cpu",
+        analysis_policy: Optional[AnalysisPolicy] = None,
+        identity_registry: Optional[NodeIdentityRegistry] = None,
     ):
         self.model = model
         if mode not in ("trace", "module"):
@@ -396,6 +410,8 @@ class LiveTrainingMonitor:
         if stats_backend not in ("cpu", "device"):
             raise ValueError("stats_backend must be 'cpu' or 'device'")
         self.stats_backend = stats_backend
+        self.analysis_policy = analysis_policy
+        self.identity_registry = identity_registry
         if max_history_steps is not None and max_history_steps < 1:
             raise ValueError("max_history_steps must be >= 1 or None")
         self.max_history_steps = max_history_steps
@@ -524,6 +540,8 @@ class LiveTrainingMonitor:
                     edge_records=edge_recs,
                     static_perturbation_profile=self.static_profile,
                     trajectory=traj_recs,
+                    analysis_policy=self.analysis_policy,
+                    identity_registry=self.identity_registry,
                 )
 
                 state = DynamicGraphState(
