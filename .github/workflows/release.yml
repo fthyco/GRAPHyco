@@ -1,0 +1,61 @@
+name: Publish Graphyco to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify version and release commit
+        run: |
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          with Path('pyproject.toml').open('rb') as f:
+              version = tomllib.load(f)['project']['version']
+          expected = 'v' + version
+          actual = os.environ['GITHUB_REF_NAME']
+          if actual != expected:
+              raise SystemExit(f'Release tag {actual!r} != package version {expected!r}')
+          print(f'Release version verified: {version}')
+          PY
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Build and inspect distributions
+        run: |
+          python -m pip install --upgrade build twine
+          python -m build
+          python -m twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: graphyco-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/graphyco/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: graphyco-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
